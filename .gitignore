@@ -12,7 +12,7 @@ apps/**/release/
 __pycache__/
 *.pyc
 .venv/
-research/
+/research/
 
 # Database & Evidence
 data/
