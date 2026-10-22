@@ -139,7 +139,8 @@ export class DeterministicQaProvider implements AiProvider {
     });
 
     // Plan steps tailored to task domain
-    const isCartTask = analysis.inScopeFeatures.some((f) => f.toLowerCase().includes('cart'));
+    const inScope = analysis?.inScopeFeatures || [];
+    const isCartTask = inScope.some((f) => f.toLowerCase().includes('cart')) || !analysis || analysis.taskType === 'EXPLORATORY';
 
     if (isCartTask) {
       steps.push({

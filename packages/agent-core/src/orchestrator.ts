@@ -224,10 +224,24 @@ export class AgentOrchestrator {
    * Generate Test Plan from Task Analysis
    * Contract: generateTestPlan(analysis): Promise<TestPlan>
    */
-  public async generateTestPlan(analysis: TaskAnalysis): Promise<TestPlan> {
+  public async generateTestPlan(analysis?: TaskAnalysis): Promise<TestPlan> {
     await this.runtimeManager.syncWithSettings();
     const provider = this.runtimeManager.getActiveProvider();
-    const plan = await provider.generatePlan(analysis);
+    const safeAnalysis: TaskAnalysis = analysis || {
+      taskId: `task_${Date.now()}`,
+      taskType: 'EXPLORATORY',
+      targetApplication: 'Web Application',
+      authorizedDomains: ['localhost', '127.0.0.1'],
+      inScopeFeatures: ['Shopping Cart', 'Navigation'],
+      outOfScopeFeatures: ['Checkout Payment'],
+      requirements: ['Verify shopping cart functional flow'],
+      requiredDevice: 'Desktop Chrome',
+      reportingRequirements: ['Steps to reproduce', 'Expected result', 'Actual result', 'Evidence screenshot'],
+      riskLevel: 'LOW',
+      missingInformation: [],
+      confidenceScore: 0.95
+    };
+    const plan = await provider.generatePlan(safeAnalysis);
     this.db.saveTestPlan(plan);
     return plan;
   }
@@ -296,9 +310,20 @@ export class AgentOrchestrator {
         task = this.db.getTask(taskId)!;
       }
 
+      // If task exists but was not analyzed yet (e.g. seeded demo task), analyze it now
+      if (!task.analysis) {
+        task.analysis = await this.analyzeTask({
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          targetUrl: task.targetUrl || targetUrl,
+          targetApp: task.targetApp
+        });
+      }
+
       let testPlan = this.db.getTestPlanForTask(taskId);
       if (!testPlan) {
-        testPlan = await this.generateTestPlan(task.analysis!);
+        testPlan = await this.generateTestPlan(task.analysis);
       }
       runState.totalSteps = testPlan.steps.length;
 
