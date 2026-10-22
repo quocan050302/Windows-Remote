@@ -395,6 +395,18 @@ export class AgentStudioDatabase {
         target_description, input_value, expected_behavior, risk_category,
         preconditions_json, allowed_actions_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        plan_id = excluded.plan_id,
+        step_number = excluded.step_number,
+        goal = excluded.goal,
+        action_type = excluded.action_type,
+        target_selector = excluded.target_selector,
+        target_description = excluded.target_description,
+        input_value = excluded.input_value,
+        expected_behavior = excluded.expected_behavior,
+        risk_category = excluded.risk_category,
+        preconditions_json = excluded.preconditions_json,
+        allowed_actions_json = excluded.allowed_actions_json
     `);
 
     for (const step of plan.steps) {

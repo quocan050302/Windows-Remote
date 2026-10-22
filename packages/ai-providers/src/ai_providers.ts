@@ -120,12 +120,13 @@ export class DeterministicQaProvider implements AiProvider {
   }
 
   public async generatePlan(analysis: TaskAnalysis): Promise<TestPlan> {
+    const planId = `plan_${Date.now()}`;
     const steps: TestPlanStep[] = [];
     let stepNum = 1;
 
     // Step 1: Open Target URL
     steps.push({
-      stepId: `step_${stepNum}`,
+      stepId: `${planId}_step_${stepNum}`,
       stepNumber: stepNum++,
       goal: 'Navigate to application home and observe initial state',
       actionType: 'navigate',
@@ -144,7 +145,7 @@ export class DeterministicQaProvider implements AiProvider {
 
     if (isCartTask) {
       steps.push({
-        stepId: `step_${stepNum}`,
+        stepId: `${planId}_step_${stepNum}`,
         stepNumber: stepNum++,
         goal: 'Add first product to shopping cart',
         actionType: 'click',
@@ -159,7 +160,7 @@ export class DeterministicQaProvider implements AiProvider {
       });
 
       steps.push({
-        stepId: `step_${stepNum}`,
+        stepId: `${planId}_step_${stepNum}`,
         stepNumber: stepNum++,
         goal: 'Add second product to shopping cart',
         actionType: 'click',
@@ -174,7 +175,7 @@ export class DeterministicQaProvider implements AiProvider {
       });
 
       steps.push({
-        stepId: `step_${stepNum}`,
+        stepId: `${planId}_step_${stepNum}`,
         stepNumber: stepNum++,
         goal: 'Open Cart drawer or page and verify total price calculation',
         actionType: 'click',
@@ -189,7 +190,7 @@ export class DeterministicQaProvider implements AiProvider {
       });
     } else {
       steps.push({
-        stepId: `step_${stepNum}`,
+        stepId: `${planId}_step_${stepNum}`,
         stepNumber: stepNum++,
         goal: 'Inspect interactive navigation tabs and buttons',
         actionType: 'click',
@@ -205,7 +206,7 @@ export class DeterministicQaProvider implements AiProvider {
     }
 
     return {
-      planId: `plan_${Date.now()}`,
+      planId,
       taskId: analysis.taskId,
       summary: `Automated Test Plan for ${analysis.targetApplication}`,
       steps,
