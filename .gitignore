@@ -7,6 +7,7 @@ release/
 apps/**/release/
 *.log
 *.exe
+*.tsbuildinfo
 
 # Python venvs & cache
 __pycache__/

@@ -697,6 +697,149 @@ export class AgentStudioDatabase {
     };
   }
 
+  public getRun(id: string) {
+    const stmt = this.db.prepare(`SELECT * FROM agent_runs WHERE id = ?`);
+    const r = stmt.get(id) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+      id: r.id as string,
+      taskId: r.task_id as string,
+      status: r.status as string,
+      mode: r.mode as string,
+      totalSteps: r.total_steps as number,
+      passedSteps: r.passed_steps as number,
+      failedSteps: r.failed_steps as number,
+      bugsFound: r.bugs_found as number,
+      startTime: r.start_time as string,
+      endTime: (r.end_time as string) || undefined
+    };
+  }
+
+  public listRuns(limit: number = 20) {
+    const stmt = this.db.prepare(`SELECT * FROM agent_runs ORDER BY start_time DESC LIMIT ?`);
+    const rows = stmt.all(limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as string,
+      taskId: r.task_id as string,
+      status: r.status as string,
+      mode: r.mode as string,
+      totalSteps: r.total_steps as number,
+      passedSteps: r.passed_steps as number,
+      failedSteps: r.failed_steps as number,
+      bugsFound: r.bugs_found as number,
+      startTime: r.start_time as string,
+      endTime: (r.end_time as string) || undefined
+    }));
+  }
+
+  public listEvidence(runId?: string): EvidenceRecord[] {
+    const query = runId
+      ? `SELECT * FROM evidence WHERE run_id = ? ORDER BY captured_at DESC`
+      : `SELECT * FROM evidence ORDER BY captured_at DESC`;
+    const stmt = this.db.prepare(query);
+    const rows = (runId ? stmt.all(runId) : stmt.all()) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as string,
+      runId: r.run_id as string,
+      stepId: (r.step_id as string) || undefined,
+      type: r.type as any,
+      filePath: r.file_path as string,
+      fileSizeBytes: r.file_size_bytes as number,
+      sha256Hash: r.sha256_hash as string,
+      isRedacted: Boolean(r.is_redacted),
+      capturedAt: r.captured_at as string
+    }));
+  }
+
+  public findAuthorizationForDomain(domain: string): AuthorizationRecord | null {
+    const stmt = this.db.prepare(`SELECT * FROM authorizations WHERE is_revoked = 0 ORDER BY created_at DESC`);
+    const rows = stmt.all() as Array<Record<string, unknown>>;
+    const norm = domain.toLowerCase();
+
+    for (const r of rows) {
+      const allowedDomains = JSON.parse(r.allowed_domains_json as string) as string[];
+      const match = allowedDomains.some((d) => {
+        const ld = d.toLowerCase();
+        return ld === norm || norm.endsWith(`.${ld}`) || ((norm === 'localhost' || norm === '127.0.0.1') && (ld === 'localhost' || ld === '127.0.0.1'));
+      });
+      if (match) {
+        return {
+          id: r.id as string,
+          grantingOrgOrPerson: r.granting_party as string,
+          verificationEvidence: r.verification_evidence as string,
+          scope: r.scope as string,
+          allowedDomains,
+          allowedActions: JSON.parse(r.allowed_actions_json as string),
+          allowedDeviceTypes: JSON.parse(r.allowed_devices_json as string),
+          startTime: r.start_time as string,
+          expirationTime: r.expiration_time as string,
+          isRevoked: Boolean(r.is_revoked),
+          createdAt: r.created_at as string
+        };
+      }
+    }
+    return null;
+  }
+
+  public seedDemoAuthorizationIfMissing(): void {
+    const existing = this.findAuthorizationForDomain('localhost') || this.findAuthorizationForDomain('127.0.0.1');
+    if (!existing) {
+      const demoAuth: AuthorizationRecord = {
+        id: 'auth_demo_lab',
+        grantingOrgOrPerson: 'Test IO Agent Studio Self-Hosted Testing Lab',
+        verificationEvidence: 'Local Sandbox / Owned Testing Target Grant',
+        scope: 'Automated exploratory & regression testing on owned demo lab port 4173',
+        allowedDomains: ['localhost', '127.0.0.1'],
+        allowedActions: ['NAVIGATE', 'CLICK', 'FILL', 'SELECT', 'SCROLL', 'CAPTURE', 'FINISH'],
+        allowedDeviceTypes: ['Desktop Chrome', 'Windows 11'],
+        startTime: new Date(Date.now() - 86400000).toISOString(),
+        expirationTime: new Date(Date.now() + 30 * 86400000).toISOString(),
+        isRevoked: false,
+        createdAt: new Date().toISOString()
+      };
+      this.saveAuthorization(demoAuth);
+    }
+  }
+
+  public seedDemoTasksIfEmpty(): void {
+    this.seedDemoAuthorizationIfMissing();
+
+    const count = (this.db.prepare(`SELECT COUNT(*) as c FROM tasks`).get() as any).c;
+    if (count > 0) return;
+
+    // Seed Task 1
+    const task1: TaskRecord = {
+      id: 'task_demo_1',
+      title: '[DEMO] Shopping Cart & Total Calculation Verification',
+      description: 'Add Product 1 ($29.99) and Product 2 ($49.99) to shopping cart. Open cart drawer and assert mathematical total ($79.98). Do not execute payments.',
+      sourcePlatform: 'TEST_IO_DEMO',
+      targetUrl: 'http://127.0.0.1:4173',
+      targetApp: 'Demo Testing Lab (E-Commerce)',
+      cycleId: 'cycle_demo_lab',
+      status: 'READY',
+      executionMode: 'COPILOT_MODE',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    this.saveTask(task1);
+
+    // Seed Task 2
+    const task2: TaskRecord = {
+      id: 'task_demo_2',
+      title: '[DEMO] Customer Authentication & Form Validation Check',
+      description: 'Navigate to login dialog. Submit blank fields and verify client-side validation errors are shown.',
+      sourcePlatform: 'TEST_IO_DEMO',
+      targetUrl: 'http://127.0.0.1:4173',
+      targetApp: 'Demo Testing Lab (Auth)',
+      cycleId: 'cycle_demo_lab',
+      status: 'READY',
+      executionMode: 'COPILOT_MODE',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    this.saveTask(task2);
+  }
+
   public close(): void {
     this.db.close();
   }

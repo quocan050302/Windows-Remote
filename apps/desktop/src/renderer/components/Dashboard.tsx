@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useStudioStore } from '../store';
 import { 
   Play, 
@@ -8,53 +8,121 @@ import {
   Activity, 
   ShieldCheck, 
   Cpu, 
-  Globe 
+  Globe,
+  Radio,
+  Server,
+  RefreshCw
 } from 'lucide-react';
 
 export const Dashboard: React.FC = () => {
-  const { metrics, mcpConnected, browserConnected, modelReady, executionMode, startRun, setTab } = useStudioStore();
+  const { 
+    metrics, 
+    mcpConnected, 
+    browserConnected, 
+    executionMode, 
+    runtimeInfo,
+    checkRuntime,
+    fetchMetrics,
+    fetchTasks,
+    fetchMcpStatus,
+    connectMcp,
+    startRun, 
+    setTab 
+  } = useStudioStore();
+
+  useEffect(() => {
+    checkRuntime();
+    fetchMetrics();
+    fetchTasks();
+    fetchMcpStatus();
+  }, [checkRuntime, fetchMetrics, fetchTasks, fetchMcpStatus]);
+
+  const isDisconnected = runtimeInfo.type === 'disconnected';
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8 overflow-y-auto h-full">
       {/* Top Welcome Banner */}
-      <div className="flex justify-between items-center bg-gradient-to-r from-blue-900/40 via-purple-900/30 to-slate-900/50 p-6 rounded-2xl border border-blue-500/20 backdrop-blur-xl">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-gradient-to-r from-blue-900/40 via-purple-900/30 to-slate-900/50 p-6 rounded-2xl border border-blue-500/20 backdrop-blur-xl">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <span>🛡️</span> Test IO Agent Studio
-            <span className="text-xs px-2.5 py-1 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+              <span>🛡️</span> Test IO Agent Studio
+            </h1>
+            <span className="text-xs px-2.5 py-1 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 font-semibold">
               V1.0 Production
             </span>
-          </h1>
+            <span className={`text-xs px-2.5 py-1 rounded-full font-semibold flex items-center gap-1.5 ${
+              runtimeInfo.type === 'electron' 
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                : runtimeInfo.type === 'browser-api'
+                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                  : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+            }`}>
+              <Server className="w-3.5 h-3.5" /> {runtimeInfo.label}
+            </span>
+          </div>
+
           <p className="text-slate-400 mt-1 text-sm">
             Autonomous & Supervised AI Testing System — Windows-MCP & Playwright Engine
           </p>
         </div>
+
         <div className="flex gap-3">
           <button 
             onClick={() => { startRun(); setTab('workspace'); }}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-medium px-5 py-2.5 rounded-xl shadow-lg shadow-blue-600/30 transition-all hover:scale-105"
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-medium px-5 py-2.5 rounded-xl shadow-lg shadow-blue-600/30 transition-all hover:scale-105 text-xs font-semibold"
           >
             <Play className="w-4 h-4 fill-white" /> Start Authorized Run
           </button>
         </div>
       </div>
 
-      {/* Connection & Health Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="glass-panel p-4 flex items-center gap-4">
-          <div className={`p-3 rounded-xl ${mcpConnected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-            <Cpu className="w-6 h-6" />
-          </div>
-          <div>
-            <div className="text-xs text-slate-400 font-medium">Windows-MCP</div>
-            <div className="text-sm font-semibold text-white flex items-center gap-1.5 mt-0.5">
-              <span className={`w-2 h-2 rounded-full ${mcpConnected ? 'bg-emerald-400' : 'bg-rose-400'}`}></span>
-              {mcpConnected ? 'Connected (Stdio)' : 'Disconnected'}
+      {/* Disconnected Warning Banner */}
+      {isDisconnected && (
+        <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/40 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-5 h-5 text-rose-400 flex-shrink-0" />
+            <div className="text-xs text-rose-200">
+              <b>Backend Service Unavailable:</b> Frontend opened without Electron bridge or local backend API. Run <code className="bg-rose-900/40 px-1.5 py-0.5 rounded font-mono text-white">start.bat</code> or <code className="bg-rose-900/40 px-1.5 py-0.5 rounded font-mono text-white">start-dev.bat</code> to launch the full system.
             </div>
           </div>
+          <button 
+            onClick={() => { checkRuntime(); fetchMetrics(); fetchTasks(); }}
+            className="flex items-center gap-1.5 bg-rose-800 hover:bg-rose-700 text-white text-xs px-3 py-1.5 rounded-lg transition-colors flex-shrink-0"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Retry
+          </button>
+        </div>
+      )}
+
+      {/* Connection & Health Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {/* Windows MCP */}
+        <div className="glass-panel p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3.5">
+            <div className={`p-3 rounded-xl ${mcpConnected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
+              <Cpu className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="text-xs text-slate-400 font-medium">Windows-MCP</div>
+              <div className="text-sm font-semibold text-white flex items-center gap-1.5 mt-0.5">
+                <span className={`w-2 h-2 rounded-full ${mcpConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`}></span>
+                {mcpConnected ? 'Connected (Stdio)' : 'Standby / Offline'}
+              </div>
+            </div>
+          </div>
+          {!mcpConnected && (
+            <button 
+              onClick={connectMcp}
+              className="text-[11px] bg-slate-800 hover:bg-slate-700 text-blue-300 px-2.5 py-1 rounded border border-slate-700 transition-colors"
+            >
+              Connect
+            </button>
+          )}
         </div>
 
-        <div className="glass-panel p-4 flex items-center gap-4">
+        {/* Browser Engine */}
+        <div className="glass-panel p-4 flex items-center gap-3.5">
           <div className={`p-3 rounded-xl ${browserConnected ? 'bg-cyan-500/10 text-cyan-400' : 'bg-rose-500/10 text-rose-400'}`}>
             <Globe className="w-6 h-6" />
           </div>
@@ -67,7 +135,8 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        <div className="glass-panel p-4 flex items-center gap-4">
+        {/* Reasoning Engine */}
+        <div className="glass-panel p-4 flex items-center gap-3.5">
           <div className="p-3 rounded-xl bg-purple-500/10 text-purple-400">
             <Activity className="w-6 h-6" />
           </div>
@@ -80,7 +149,8 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        <div className="glass-panel p-4 flex items-center gap-4">
+        {/* Execution Mode */}
+        <div className="glass-panel p-4 flex items-center gap-3.5">
           <div className="p-3 rounded-xl bg-amber-500/10 text-amber-400">
             <ShieldCheck className="w-6 h-6" />
           </div>
@@ -149,7 +219,7 @@ export const Dashboard: React.FC = () => {
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">Authorization Scope:</span>
-              <span className="text-emerald-400">Exploratory & Regression Verified</span>
+              <span className="text-emerald-400 font-medium">Exploratory & Regression Verified</span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">Payment Restrictions:</span>
@@ -158,7 +228,7 @@ export const Dashboard: React.FC = () => {
           </div>
           <button 
             onClick={() => setTab('workspace')}
-            className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm font-medium transition-colors"
+            className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm font-medium transition-colors border border-slate-700"
           >
             Open Test Workspace
           </button>
@@ -183,10 +253,10 @@ export const Dashboard: React.FC = () => {
             </div>
           </div>
           <button 
-            onClick={() => setTab('reports')}
-            className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm font-medium transition-colors"
+            onClick={() => setTab('inbox')}
+            className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm font-medium transition-colors border border-slate-700"
           >
-            Review Bug Report Drafts
+            View Permitted Cycles in Inbox
           </button>
         </div>
       </div>

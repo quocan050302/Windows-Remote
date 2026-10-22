@@ -6,6 +6,10 @@
   "main": "./dist/main/main.js",
   "scripts": {
     "dev": "vite",
+    "dev:electron": "electron .",
+    "start": "electron .",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
     "build": "vite build && tsc -p tsconfig.main.json",
     "package:win": "electron-builder --win"
   },

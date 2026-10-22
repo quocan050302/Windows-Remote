@@ -164,7 +164,204 @@ export class WindowsMcpProcessManager {
       this.childProcess = null;
     }
   }
+
+  public getProcess(): ChildProcess | null {
+    return this.childProcess;
+  }
 }
+
+export interface WindowsMcpStatusInfo {
+  isConnected: boolean;
+  transport: 'stdio' | 'none';
+  discoveredTools: string[];
+  toolsCount: number;
+  lastConnectedAt?: string;
+  error?: string;
+  humanTakeoverActive: boolean;
+  controlStatus: {
+    hasControl: boolean;
+    policy: string;
+    idleTimeoutSeconds: number;
+  };
+}
+
+export class WindowsMcpRuntimeService {
+  private processManager: WindowsMcpProcessManager | null = null;
+  private connection: McpConnection | null = null;
+  private humanTakeoverActive: boolean = false;
+  private lastConnectedAt?: string;
+  private lastError?: string;
+  private controlPolicy: string = 'relaxed';
+  private idleTimeout: number = 10.0;
+
+  constructor(private config: WindowsMcpConfig = {}) {
+    this.controlPolicy = config.controlPolicy || 'relaxed';
+    this.idleTimeout = config.idleTimeoutSeconds ?? 10.0;
+  }
+
+  public async connectWindowsMcp(config?: WindowsMcpConfig): Promise<McpConnection> {
+    if (config) {
+      this.config = { ...this.config, ...config };
+      this.controlPolicy = this.config.controlPolicy || this.controlPolicy;
+      this.idleTimeout = this.config.idleTimeoutSeconds ?? this.idleTimeout;
+    }
+
+    try {
+      this.processManager = new WindowsMcpProcessManager(this.config);
+      this.connection = await this.processManager.connect();
+      this.lastConnectedAt = new Date().toISOString();
+      this.lastError = undefined;
+      return this.connection;
+    } catch (err: any) {
+      this.lastError = err?.message || String(err);
+      this.connection = null;
+      throw err;
+    }
+  }
+
+  public async disconnectWindowsMcp(): Promise<void> {
+    if (this.processManager) {
+      await this.processManager.disconnect().catch(() => {});
+      this.processManager = null;
+    }
+    this.connection = null;
+  }
+
+  public async getWindowsMcpStatus(): Promise<WindowsMcpStatusInfo> {
+    const isConnected = Boolean(this.connection && this.connection.isConnected);
+    let hasControl = false;
+
+    if (isConnected) {
+      try {
+        const ctrl = await this.getControlStatus();
+        hasControl = ctrl.hasControl;
+      } catch (_) {}
+    }
+
+    return {
+      isConnected,
+      transport: isConnected ? 'stdio' : 'none',
+      discoveredTools: this.connection?.discoveredTools || [],
+      toolsCount: this.connection?.discoveredTools.length || 0,
+      lastConnectedAt: this.lastConnectedAt,
+      error: this.lastError,
+      humanTakeoverActive: this.humanTakeoverActive,
+      controlStatus: {
+        hasControl,
+        policy: this.controlPolicy,
+        idleTimeoutSeconds: this.idleTimeout
+      }
+    };
+  }
+
+  public async captureDesktopSnapshot(
+    options: DesktopSnapshotOptions = {}
+  ): Promise<DesktopSnapshot> {
+    const timestamp = new Date().toISOString();
+
+    if (!this.connection || !this.connection.isConnected) {
+      return {
+        timestamp,
+        activeWindow: undefined,
+        windows: [],
+        uiElements: [],
+        displayMetadata: [],
+        screenshotBase64: undefined
+      };
+    }
+
+    try {
+      const rawResult: any = await this.connection.callTool('Snapshot', {
+        use_vision: Boolean(options.includeVision),
+        use_ui_tree: Boolean(options.includeUiTree ?? true),
+        use_annotation: Boolean(options.useAnnotation ?? false),
+        display: options.displayIndices,
+        region: options.region
+      });
+
+      let screenshotBase64: string | undefined;
+      let activeWindow: { title: string; processId: number } | undefined;
+      let uiElements: any[] = [];
+      let displayMetadata: any[] = [];
+
+      // Parse standard MCP structured tool response
+      if (rawResult && Array.isArray(rawResult.content)) {
+        for (const part of rawResult.content) {
+          if (part.type === 'image' && part.data) {
+            screenshotBase64 = part.data;
+          } else if (part.type === 'text' && part.text) {
+            try {
+              const parsed = JSON.parse(part.text);
+              if (parsed.activeWindow) activeWindow = parsed.activeWindow;
+              if (Array.isArray(parsed.uiElements)) uiElements = parsed.uiElements;
+              if (Array.isArray(parsed.displays)) displayMetadata = parsed.displays;
+            } catch (_) {
+              // Text representation summary
+            }
+          }
+        }
+      } else if (typeof rawResult === 'string') {
+        screenshotBase64 = rawResult;
+      }
+
+      return {
+        timestamp,
+        activeWindow,
+        windows: [],
+        uiElements,
+        displayMetadata,
+        screenshotBase64
+      };
+    } catch (error: any) {
+      throw new Error(`captureDesktopSnapshot failed: ${error?.message || error}`);
+    }
+  }
+
+  public async getControlStatus(): Promise<{ hasControl: boolean; idleTimeoutSeconds: number; policy: string }> {
+    if (!this.connection || !this.connection.isConnected) {
+      return {
+        hasControl: false,
+        idleTimeoutSeconds: this.idleTimeout,
+        policy: this.controlPolicy
+      };
+    }
+
+    try {
+      const raw: any = await this.connection.callTool('ControlStatus', {});
+      let hasControl = false;
+      if (raw && Array.isArray(raw.content)) {
+        const textPart = raw.content.find((c: any) => c.type === 'text');
+        if (textPart && textPart.text) {
+          try {
+            const data = JSON.parse(textPart.text);
+            hasControl = Boolean(data.has_control ?? data.hasControl);
+          } catch (_) {}
+        }
+      }
+      return {
+        hasControl,
+        idleTimeoutSeconds: this.idleTimeout,
+        policy: this.controlPolicy
+      };
+    } catch (_) {
+      return {
+        hasControl: !this.humanTakeoverActive,
+        idleTimeoutSeconds: this.idleTimeout,
+        policy: this.controlPolicy
+      };
+    }
+  }
+
+  public async handleHumanTakeover(active: boolean): Promise<{ humanTakeoverActive: boolean }> {
+    this.humanTakeoverActive = active;
+    if (active && this.connection && this.connection.isConnected) {
+      // In relaxed or take_over policy, human user interaction automatically takes over
+    }
+    return { humanTakeoverActive: this.humanTakeoverActive };
+  }
+}
+
+export const defaultMcpRuntimeService = new WindowsMcpRuntimeService();
 
 let activeProcessManager: WindowsMcpProcessManager | null = null;
 let activeConnection: McpConnection | null = null;
@@ -173,9 +370,23 @@ let activeConnection: McpConnection | null = null;
  * Connect to Windows-MCP
  */
 export async function connectWindowsMcp(config: WindowsMcpConfig = {}): Promise<McpConnection> {
-  activeProcessManager = new WindowsMcpProcessManager(config);
-  activeConnection = await activeProcessManager.connect();
+  activeConnection = await defaultMcpRuntimeService.connectWindowsMcp(config);
   return activeConnection;
+}
+
+/**
+ * Disconnect from Windows-MCP
+ */
+export async function disconnectWindowsMcp(): Promise<void> {
+  await defaultMcpRuntimeService.disconnectWindowsMcp();
+  activeConnection = null;
+}
+
+/**
+ * Get Windows-MCP Status
+ */
+export async function getWindowsMcpStatus(): Promise<WindowsMcpStatusInfo> {
+  return defaultMcpRuntimeService.getWindowsMcpStatus();
 }
 
 /**
@@ -184,39 +395,21 @@ export async function connectWindowsMcp(config: WindowsMcpConfig = {}): Promise<
 export async function captureDesktopSnapshot(
   options: DesktopSnapshotOptions = {}
 ): Promise<DesktopSnapshot> {
-  const timestamp = new Date().toISOString();
+  return defaultMcpRuntimeService.captureDesktopSnapshot(options);
+}
 
-  if (!activeConnection || !activeConnection.isConnected) {
-    // Return structured offline diagnostic snapshot if MCP not connected
-    return {
-      timestamp,
-      activeWindow: { title: 'Desktop (MCP Offline)', processId: 0 },
-      windows: [],
-      uiElements: [],
-      displayMetadata: [{ index: 0, width: 1920, height: 1080, scale: 1.0 }]
-    };
-  }
+/**
+ * Get Control Status
+ */
+export async function getControlStatus(): Promise<{ hasControl: boolean; idleTimeoutSeconds: number; policy: string }> {
+  return defaultMcpRuntimeService.getControlStatus();
+}
 
-  try {
-    const rawResult: any = await activeConnection.callTool('Snapshot', {
-      use_vision: Boolean(options.includeVision),
-      use_ui_tree: Boolean(options.includeUiTree ?? true),
-      use_annotation: Boolean(options.useAnnotation ?? false),
-      display: options.displayIndices,
-      region: options.region
-    });
-
-    return {
-      timestamp,
-      activeWindow: { title: 'Windows Desktop Active Window', processId: 1000 },
-      windows: [],
-      uiElements: [],
-      displayMetadata: [{ index: 0, width: 1920, height: 1080, scale: 1.0 }],
-      screenshotBase64: typeof rawResult === 'string' ? rawResult : undefined
-    };
-  } catch (error: any) {
-    throw new Error(`captureDesktopSnapshot failed: ${error?.message || error}`);
-  }
+/**
+ * Handle Human Takeover
+ */
+export async function handleHumanTakeover(active: boolean): Promise<{ humanTakeoverActive: boolean }> {
+  return defaultMcpRuntimeService.handleHumanTakeover(active);
 }
 
 /**

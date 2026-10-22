@@ -1,8 +1,28 @@
 import test from 'node:test';
 import * as assert from 'node:assert';
 import { BrowserSessionManager } from '../../packages/browser-adapter/src/browser_session_manager.js';
+import { server as demoServer } from '../../apps/demo-testing-lab/server.js';
 
 test('Browser Adapter Integration - Launches Chromium, inspects Demo Lab, and clicks Add to Cart', async () => {
+  let startedServer = false;
+  if (!demoServer.listening) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        demoServer.once('error', (err: any) => {
+          if (err.code === 'EADDRINUSE') {
+            resolve();
+          } else {
+            reject(err);
+          }
+        });
+        demoServer.listen(4173, '127.0.0.1', () => {
+          startedServer = true;
+          resolve();
+        });
+      });
+    } catch (_) {}
+  }
+
   const manager = new BrowserSessionManager();
   const session = await manager.createBrowserSession({ headless: true });
   assert.ok(session.sessionId);
@@ -35,5 +55,9 @@ test('Browser Adapter Integration - Launches Chromium, inspects Demo Lab, and cl
     assert.ok(screenshot.length > 0);
   } finally {
     await manager.closeSession(session.sessionId);
+    if (startedServer) {
+      await new Promise<void>((resolve) => demoServer.close(() => resolve()));
+    }
   }
 });
+

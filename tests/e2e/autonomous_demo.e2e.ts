@@ -2,9 +2,29 @@ import test from 'node:test';
 import * as assert from 'node:assert';
 import { AgentStudioDatabase } from '../../packages/storage/src/database.js';
 import { AgentOrchestrator } from '../../packages/agent-core/src/orchestrator.js';
+import { server as demoServer } from '../../apps/demo-testing-lab/server.js';
 
 test('E2E Autonomous Demo Acceptance Test - Cart Calculation Defect Detection', async () => {
   console.log('\n--- STARTING E2E AUTONOMOUS DEMO ACCEPTANCE TEST ---');
+  let startedServer = false;
+  if (!demoServer.listening) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        demoServer.once('error', (err: any) => {
+          if (err.code === 'EADDRINUSE') {
+            resolve();
+          } else {
+            reject(err);
+          }
+        });
+        demoServer.listen(4173, '127.0.0.1', () => {
+          startedServer = true;
+          resolve();
+        });
+      });
+    } catch (_) {}
+  }
+
   const db = new AgentStudioDatabase(':memory:');
   const orchestrator = new AgentOrchestrator(db);
 
@@ -74,5 +94,8 @@ test('E2E Autonomous Demo Acceptance Test - Cart Calculation Defect Detection', 
   assert.strictEqual(report.status, 'READY_FOR_HUMAN_SUBMISSION');
 
   db.close();
+  if (startedServer) {
+    await new Promise<void>((resolve) => demoServer.close(() => resolve()));
+  }
   console.log('--- E2E AUTONOMOUS DEMO ACCEPTANCE TEST PASSED ---\n');
 });

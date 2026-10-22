@@ -106,6 +106,39 @@ export class BrowserSessionManager {
       errors.push(err.message);
     });
 
+    // Enforce destination policy on navigation and redirects
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) {
+        try {
+          const navUrl = new URL(frame.url());
+          const navDomain = navUrl.hostname.toLowerCase();
+          if (
+            navDomain === 'tester.test.io' ||
+            navDomain.endsWith('.test.io') ||
+            navDomain === 'paypal.com' ||
+            navDomain === 'stripe.com'
+          ) {
+            page.close().catch(() => {});
+            throw new Error(`Security Violation: Redirect to prohibited destination '${navDomain}' blocked.`);
+          }
+        } catch (_) {}
+      }
+    });
+
+    // Guard against new popups / tabs
+    internal.context.on('page', (newPage) => {
+      newPage.on('framenavigated', (frame) => {
+        if (frame === newPage.mainFrame()) {
+          try {
+            const h = new URL(frame.url()).hostname.toLowerCase();
+            if (h === 'tester.test.io' || h.endsWith('.test.io') || h === 'paypal.com' || h === 'stripe.com') {
+              newPage.close().catch(() => {});
+            }
+          } catch (_) {}
+        }
+      });
+    });
+
     internal.pages.set(pageId, page);
     internal.consoleErrors.set(pageId, errors);
     internal.session.activePages.push(pageId);
@@ -120,6 +153,30 @@ export class BrowserSessionManager {
       currentUrl: page.url(),
       title
     };
+  }
+
+  /**
+   * Get latest live screenshot for active session
+   */
+  public async getLatestScreenshot(sessionId: string): Promise<string | undefined> {
+    const internal = this.sessions.get(sessionId);
+    if (!internal || internal.session.isClosed || internal.session.activePages.length === 0) {
+      return undefined;
+    }
+    const lastPageId = internal.session.activePages[internal.session.activePages.length - 1];
+    const page = internal.pages.get(lastPageId);
+    if (!page) return undefined;
+
+    try {
+      const buf = await page.screenshot({ fullPage: false, type: 'jpeg', quality: 60 });
+      return buf.toString('base64');
+    } catch (_) {
+      return undefined;
+    }
+  }
+
+  public getSession(sessionId: string): BrowserSession | undefined {
+    return this.sessions.get(sessionId)?.session;
   }
 
   /**
@@ -187,7 +244,7 @@ export class BrowserSessionManager {
     );
 
     const bodyText = await page.evaluate(() => document.body.innerText || '');
-    const visibleTextSnippet = bodyText.replace(/\s+/g, ' ').slice(0, 500);
+    const visibleTextSnippet = bodyText.replace(/\s+/g, ' ').slice(0, 8000);
 
     return {
       pageId,
