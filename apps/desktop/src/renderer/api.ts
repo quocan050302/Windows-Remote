@@ -213,6 +213,100 @@ class ApiClient {
       window.open(url, '_blank', 'noopener,noreferrer');
     }
   }
+
+  // ==========================================
+  // Settings V2.0 APIs
+  // ==========================================
+
+  public async getPublicSettings(): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.getPublicSettings) {
+      return (window as any).electronAPI.getPublicSettings();
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/settings`);
+    if (!res.ok) throw new Error(`Failed to fetch settings: ${res.statusText}`);
+    return res.json();
+  }
+
+  public async saveProviderKey(providerId: string, key: string): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.saveProviderKey) {
+      return (window as any).electronAPI.saveProviderKey({ providerId, key });
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/settings/save-key`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId, key })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to save key: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  public async testProviderConnection(providerId: string, draftKey?: string): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.testProviderConnection) {
+      return (window as any).electronAPI.testProviderConnection({ providerId, draftKey });
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/settings/test-connection`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId, draftKey })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to test connection: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  public async removeProviderKey(providerId: string): Promise<boolean> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.removeProviderKey) {
+      return (window as any).electronAPI.removeProviderKey(providerId);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/settings/remove-key`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId })
+    });
+    return res.ok;
+  }
+
+  public async activateProvider(providerId: string): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.activateProvider) {
+      return (window as any).electronAPI.activateProvider(providerId);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/settings/activate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to activate provider: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  public async updateSettings(req: any): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.updateSettings) {
+      return (window as any).electronAPI.updateSettings(req);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req)
+    });
+    return res.json();
+  }
+
+  public async getActiveAiStatus(): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.getActiveAiStatus) {
+      return (window as any).electronAPI.getActiveAiStatus();
+    }
+    const settings = await this.getPublicSettings().catch(() => null);
+    return settings?.activeRuntime || null;
+  }
 }
+
 
 export const apiClient = new ApiClient();

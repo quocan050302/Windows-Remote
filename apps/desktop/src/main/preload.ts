@@ -19,5 +19,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   disconnectMcp: () => ipcRenderer.invoke('mcp:disconnect'),
   takeoverMcp: (active: boolean) => ipcRenderer.invoke('mcp:takeover', active),
 
+  // Settings V2.0 IPC APIs
+  getPublicSettings: () => ipcRenderer.invoke('settings:getPublic'),
+  saveProviderKey: (payload: { providerId: string; key: string }) =>
+    ipcRenderer.invoke('settings:saveProviderKey', payload),
+  testProviderConnection: (payload: { providerId: string; draftKey?: string }) =>
+    ipcRenderer.invoke('settings:testProviderConnection', payload),
+  removeProviderKey: (providerId: string) =>
+    ipcRenderer.invoke('settings:removeProviderKey', providerId),
+  activateProvider: (providerId: string) =>
+    ipcRenderer.invoke('settings:activateProvider', providerId),
+  updateSettings: (req: any) =>
+    ipcRenderer.invoke('settings:update', req),
+  getActiveAiStatus: () =>
+    ipcRenderer.invoke('settings:getActiveAiStatus'),
+
   openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url)
 });

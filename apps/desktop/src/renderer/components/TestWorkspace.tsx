@@ -16,7 +16,8 @@ import {
   Terminal,
   Globe,
   Radio,
-  FileText
+  FileText,
+  Cpu
 } from 'lucide-react';
 
 export const TestWorkspace: React.FC = () => {
@@ -25,6 +26,7 @@ export const TestWorkspace: React.FC = () => {
     currentStep, 
     totalSteps, 
     activeStepGoal,
+    activeAiRuntime,
     targetUrl, 
     isPaused, 
     isUserTakeover,
@@ -92,6 +94,14 @@ export const TestWorkspace: React.FC = () => {
           <div className="text-xs text-slate-400 flex items-center gap-1.5">
             <Shield className="w-3.5 h-3.5 text-blue-400" />
             Target: <span className="font-mono text-blue-300">{targetUrl}</span>
+          </div>
+
+          <span className="text-slate-600 hidden md:inline">|</span>
+
+          <div className="text-xs text-slate-400 flex items-center gap-1.5 hidden md:flex">
+            <Cpu className="w-3.5 h-3.5 text-purple-400" />
+            Reasoning Engine: <span className="text-slate-200 font-semibold">{activeAiRuntime?.providerName || 'Deterministic QA'}</span>
+            <span className="font-mono text-emerald-400 text-[11px]">({activeAiRuntime?.modelId || 'qa-deterministic-v1'})</span>
           </div>
         </div>
 

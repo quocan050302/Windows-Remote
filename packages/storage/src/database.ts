@@ -840,7 +840,22 @@ export class AgentStudioDatabase {
     this.saveTask(task2);
   }
 
+  public getSetting(key: string): string | null {
+    const stmt = this.db.prepare(`SELECT value FROM application_settings WHERE key = ?`);
+    const row = stmt.get(key) as { value: string } | undefined;
+    return row ? row.value : null;
+  }
+
+  public setSetting(key: string, value: string): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO application_settings (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `);
+    stmt.run(key, value);
+  }
+
   public close(): void {
     this.db.close();
   }
 }
+

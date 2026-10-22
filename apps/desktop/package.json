@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@test-io-agent/agent-core": "workspace:*",
+    "@test-io-agent/ai-providers": "workspace:*",
     "@test-io-agent/browser-adapter": "workspace:*",
     "@test-io-agent/evidence": "workspace:*",
     "@test-io-agent/policy-engine": "workspace:*",

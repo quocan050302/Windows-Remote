@@ -1,15 +1,29 @@
 import * as http from 'node:http';
 import { URL } from 'node:url';
-import { exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { AgentStudioDatabase } from '@test-io-agent/storage';
 import { AgentOrchestrator } from '@test-io-agent/agent-core';
 import { defaultMcpRuntimeService } from '@test-io-agent/windows-mcp-adapter';
+import { SettingsService } from './services/settings_service.js';
 
 export function createLocalApiServer(
   db: AgentStudioDatabase,
   orchestrator: AgentOrchestrator,
+  settingsServiceOrPort?: SettingsService | number,
   port: number = 3001
 ): http.Server {
+  let settings: SettingsService;
+  let serverPort = port;
+
+  if (typeof settingsServiceOrPort === 'number') {
+    serverPort = settingsServiceOrPort;
+    settings = new SettingsService(db);
+  } else if (settingsServiceOrPort) {
+    settings = settingsServiceOrPort;
+  } else {
+    settings = new SettingsService(db);
+  }
+
   const server = http.createServer(async (req, res) => {
     // 1. Strict Security & Origin Guard
     const origin = req.headers.origin || '';
@@ -70,6 +84,69 @@ export function createLocalApiServer(
           version: '1.0.0',
           timestamp: new Date().toISOString()
         });
+        return;
+      }
+
+      // Settings: Public Settings (Never exposes secrets)
+      if (req.method === 'GET' && pathname === '/api/settings') {
+        const publicSettings = await settings.getPublicSettings();
+        sendJson(200, publicSettings);
+        return;
+      }
+
+      // Settings: Update
+      if (req.method === 'POST' && pathname === '/api/settings') {
+        const body = await readBody();
+        const updated = await settings.updateSettings(body);
+        sendJson(200, updated);
+        return;
+      }
+
+      // Settings: Test Connection
+      if (req.method === 'POST' && pathname === '/api/settings/test-connection') {
+        const body = await readBody();
+        if (!body.providerId) {
+          sendJson(400, { error: 'providerId is required.' });
+          return;
+        }
+        const testResult = await settings.testProviderConnection(body.providerId, body.draftKey);
+        sendJson(200, testResult);
+        return;
+      }
+
+      // Settings: Save Provider Key
+      if (req.method === 'POST' && pathname === '/api/settings/save-key') {
+        const body = await readBody();
+        if (!body.providerId || !body.key) {
+          sendJson(400, { error: 'providerId and key are required.' });
+          return;
+        }
+        const providerStatus = await settings.saveProviderKey(body.providerId, body.key);
+        sendJson(200, providerStatus);
+        return;
+      }
+
+      // Settings: Remove Provider Key
+      if (req.method === 'POST' && pathname === '/api/settings/remove-key') {
+        const body = await readBody();
+        if (!body.providerId) {
+          sendJson(400, { error: 'providerId is required.' });
+          return;
+        }
+        const removed = await settings.removeProviderKey(body.providerId);
+        sendJson(200, { success: removed });
+        return;
+      }
+
+      // Settings: Activate Provider
+      if (req.method === 'POST' && pathname === '/api/settings/activate') {
+        const body = await readBody();
+        if (!body.providerId) {
+          sendJson(400, { error: 'providerId is required.' });
+          return;
+        }
+        const activeRuntime = await settings.activateProvider(body.providerId);
+        sendJson(200, activeRuntime);
         return;
       }
 
@@ -216,7 +293,7 @@ export function createLocalApiServer(
         return;
       }
 
-      // External Browser Launch (Test IO Safe Opener)
+      // External Browser Launch (Test IO Safe Opener - No Shell String Interpolation)
       if (req.method === 'POST' && pathname === '/api/open-external') {
         const body = await readBody();
         const urlToOpen = String(body.url || '');
@@ -228,22 +305,26 @@ export function createLocalApiServer(
           return;
         }
 
-        // Must be tester.test.io or http://127.0.0.1
+        // Destination domain restriction
         const host = parsed.hostname.toLowerCase();
         if (host !== 'tester.test.io' && !host.endsWith('.test.io') && host !== 'localhost' && host !== '127.0.0.1') {
           sendJson(403, { error: 'Opening this external destination is not permitted.' });
           return;
         }
 
-        // Open in user default OS browser
-        const cmd = process.platform === 'win32' ? `start "" "${urlToOpen}"` : `open "${urlToOpen}"`;
-        exec(cmd, (err) => {
-          if (err) {
-            sendJson(500, { error: 'Failed to launch default browser.' });
+        // Safe URL launch via spawn array (no shell interpolation)
+        try {
+          if (process.platform === 'win32') {
+            spawn('cmd.exe', ['/c', 'start', '', urlToOpen], { detached: true, stdio: 'ignore' });
+          } else if (process.platform === 'darwin') {
+            spawn('open', [urlToOpen], { detached: true, stdio: 'ignore' });
           } else {
-            sendJson(200, { success: true, url: urlToOpen });
+            spawn('xdg-open', [urlToOpen], { detached: true, stdio: 'ignore' });
           }
-        });
+          sendJson(200, { success: true, url: urlToOpen });
+        } catch (err: any) {
+          sendJson(500, { error: err.message || 'Failed to open URL' });
+        }
         return;
       }
 
@@ -253,8 +334,8 @@ export function createLocalApiServer(
     }
   });
 
-  server.listen(port, '127.0.0.1', () => {
-    console.log(`[Test IO Studio] Local Desktop Backend API active on http://127.0.0.1:${port}`);
+  server.listen(serverPort, '127.0.0.1', () => {
+    console.log(`[Test IO Studio] Local Desktop Backend API active on http://127.0.0.1:${serverPort}`);
   });
 
   return server;
@@ -264,6 +345,7 @@ export function createLocalApiServer(
 if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const db = new AgentStudioDatabase('./data/agent_studio.db');
   db.seedDemoTasksIfEmpty();
+  const settingsService = new SettingsService(db);
   const orchestrator = new AgentOrchestrator(db);
-  createLocalApiServer(db, orchestrator, 3001);
+  createLocalApiServer(db, orchestrator, settingsService, 3001);
 }

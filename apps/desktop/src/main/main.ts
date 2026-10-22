@@ -2,26 +2,39 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AgentStudioDatabase } from '@test-io-agent/storage';
-import { AgentOrchestrator } from '@test-io-agent/agent-core';
+import { AgentOrchestrator, AiRuntimeManager } from '@test-io-agent/agent-core';
 import { defaultMcpRuntimeService } from '@test-io-agent/windows-mcp-adapter';
 import { createLocalApiServer } from './local_server.js';
+import { SecretStore } from './services/secret_store.js';
+import { SettingsService } from './services/settings_service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let mainWindow: BrowserWindow | null = null;
 let db: AgentStudioDatabase;
+let secretStore: SecretStore;
+let settingsService: SettingsService;
 let orchestrator: AgentOrchestrator;
 let localServer: any = null;
 
 function createWindow() {
   db = new AgentStudioDatabase('./data/agent_studio.db');
   db.seedDemoTasksIfEmpty();
-  orchestrator = new AgentOrchestrator(db);
 
-  // Also start local API server on 127.0.0.1:3001 so browser tabs can also connect
+  secretStore = new SecretStore();
+  settingsService = new SettingsService(db, secretStore);
+
+  // Wire AiRuntimeManager to dynamically retrieve active provider configuration
+  const aiRuntimeManager = new AiRuntimeManager(
+    () => settingsService.getActiveProviderConfiguration()
+  );
+
+  orchestrator = new AgentOrchestrator(db, undefined, aiRuntimeManager);
+
+  // Start local API server on 127.0.0.1:3001
   try {
-    localServer = createLocalApiServer(db, orchestrator, 3001);
+    localServer = createLocalApiServer(db, orchestrator, settingsService, 3001);
   } catch (e) {
     console.warn('[Desktop Main] Local API server port 3001 already in use or started:', e);
   }
@@ -47,7 +60,7 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
 
-  // Setup IPC Handlers
+  // Setup IPC Handlers: Metrics & Tasks
   ipcMain.handle('metrics:get', () => {
     return db.getDashboardMetrics();
   });
@@ -74,8 +87,8 @@ function createWindow() {
     return { task, analysis, plan };
   });
 
+  // Run lifecycle
   ipcMain.handle('run:start', async (_, payload) => {
-    // Run asynchronously so UI does not block
     const runPromise = orchestrator.executeAgentLoop(payload.runId, undefined, {
       targetUrl: payload.targetUrl,
       taskId: payload.taskId,
@@ -107,6 +120,7 @@ function createWindow() {
     return orchestrator.getRunLogs(runId);
   });
 
+  // Windows-MCP Adapter
   ipcMain.handle('mcp:status', async () => {
     return defaultMcpRuntimeService.getWindowsMcpStatus();
   });
@@ -125,6 +139,40 @@ function createWindow() {
     return defaultMcpRuntimeService.handleHumanTakeover(active);
   });
 
+  // Settings V2.0 IPC Handlers
+  ipcMain.handle('settings:getPublic', async () => {
+    return settingsService.getPublicSettings();
+  });
+
+  ipcMain.handle('settings:saveProviderKey', async (_, { providerId, key }) => {
+    return settingsService.saveProviderKey(providerId, key);
+  });
+
+  ipcMain.handle('settings:testProviderConnection', async (_, { providerId, draftKey }) => {
+    return settingsService.testProviderConnection(providerId, draftKey);
+  });
+
+  ipcMain.handle('settings:removeProviderKey', async (_, providerId) => {
+    return settingsService.removeProviderKey(providerId);
+  });
+
+  ipcMain.handle('settings:activateProvider', async (_, providerId) => {
+    const res = await settingsService.activateProvider(providerId);
+    await orchestrator.getRuntimeManager().syncWithSettings();
+    return res;
+  });
+
+  ipcMain.handle('settings:update', async (_, req) => {
+    const res = await settingsService.updateSettings(req);
+    await orchestrator.getRuntimeManager().syncWithSettings();
+    return res;
+  });
+
+  ipcMain.handle('settings:getActiveAiStatus', async () => {
+    return orchestrator.getActiveAiRuntimeStatus();
+  });
+
+  // Safe external URL launching
   ipcMain.handle('shell:openExternal', async (_, url: string) => {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {

@@ -23,6 +23,7 @@ import {
 import { EvidenceService } from '@test-io-agent/evidence';
 import { generateReportDraft, validateReportDraft } from '@test-io-agent/report-engine';
 import { detectCandidateBug, verifyCandidateBug } from '@test-io-agent/test-intelligence';
+import { AiRuntimeManager } from './ai_runtime_manager.js';
 
 export interface ActiveRunState {
   runId: string;
@@ -44,7 +45,7 @@ export interface ActiveRunState {
 }
 
 export class AgentOrchestrator {
-  private aiProvider: AiProvider;
+  private runtimeManager: AiRuntimeManager;
   private auditLogger: AuditLogService;
   private evidenceService: EvidenceService;
   private activeAbortControllers = new Map<string, AbortController>();
@@ -53,20 +54,40 @@ export class AgentOrchestrator {
   constructor(
     private db: AgentStudioDatabase,
     private browserManager: BrowserSessionManager = browserSessionManager,
-    providerType: string = 'deterministic',
+    providerType: string | AiRuntimeManager = 'deterministic',
     providerConfig?: any
   ) {
-    this.aiProvider = createAiProvider(providerType, providerConfig);
+    if (providerType instanceof AiRuntimeManager) {
+      this.runtimeManager = providerType;
+    } else {
+      this.runtimeManager = new AiRuntimeManager(undefined, providerType, providerConfig);
+    }
     this.auditLogger = new AuditLogService(db);
     this.evidenceService = new EvidenceService(db);
   }
 
+  public setRuntimeManager(manager: AiRuntimeManager): void {
+    this.runtimeManager = manager;
+  }
+
+  public getRuntimeManager(): AiRuntimeManager {
+    return this.runtimeManager;
+  }
+
   public setAiProvider(providerType: string, config?: any): void {
-    this.aiProvider = createAiProvider(providerType, config);
+    this.runtimeManager.setProvider(providerType as any, config);
   }
 
   public getActiveAiProviderName(): string {
-    return this.aiProvider.name;
+    return this.runtimeManager.getActiveProvider().name;
+  }
+
+  public getActiveAiRuntimeStatus() {
+    return this.runtimeManager.getActiveAiRuntimeStatus();
+  }
+
+  public async syncAiRuntimeWithSettings(): Promise<void> {
+    await this.runtimeManager.syncWithSettings();
   }
 
   public getRunState(runId: string): ActiveRunState | null {
@@ -160,7 +181,11 @@ export class AgentOrchestrator {
    * Contract: analyzeTask(input): Promise<TaskAnalysis>
    */
   public async analyzeTask(input: TaskInput): Promise<TaskAnalysis> {
-    const analysis = await this.aiProvider.analyzeTask({
+    await this.runtimeManager.syncWithSettings();
+    const provider = this.runtimeManager.getActiveProvider();
+    const modelId = this.runtimeManager.getActiveConfig().modelId;
+
+    const analysis = await provider.analyzeTask({
       title: input.title,
       description: input.description
     });
@@ -200,7 +225,9 @@ export class AgentOrchestrator {
    * Contract: generateTestPlan(analysis): Promise<TestPlan>
    */
   public async generateTestPlan(analysis: TaskAnalysis): Promise<TestPlan> {
-    const plan = await this.aiProvider.generatePlan(analysis);
+    await this.runtimeManager.syncWithSettings();
+    const provider = this.runtimeManager.getActiveProvider();
+    const plan = await provider.generatePlan(analysis);
     this.db.saveTestPlan(plan);
     return plan;
   }
@@ -335,6 +362,11 @@ export class AgentOrchestrator {
 
       runState.logs.push(`[${new Date().toLocaleTimeString()}] Authorization verified: Grant '${auth.id}' by '${auth.grantingOrgOrPerson}'.`);
 
+      // Bind and lock reasoning engine for this run
+      const runProvider = this.runtimeManager.getProviderForRun(runId);
+      const runModelId = this.runtimeManager.getModelIdForRun(runId);
+      runState.logs.push(`[${new Date().toLocaleTimeString()}] Reasoning Engine bound: ${runProvider.name} (Model: ${runModelId})`);
+
       // 3. Initialize Browser Session
       activeBrowserSession = await this.browserManager.createBrowserSession(
         { headless: true },
@@ -386,7 +418,7 @@ export class AgentOrchestrator {
         const observation = await this.browserManager.inspectWebPage(activePage.pageId);
 
         // B. Choose Action via configured AI Provider
-        const action = await this.aiProvider.chooseAction(observation, testPlan, stepIndex);
+        const action = await runProvider.chooseAction(observation, testPlan, stepIndex);
 
         // C. Check Permission Guard
         const permDecision = checkActionPermission(actionContext, {
@@ -451,7 +483,7 @@ export class AgentOrchestrator {
           elementState: step.targetSelector ? { selector: step.targetSelector, shouldBeVisible: true } : undefined
         };
 
-        const verification = await this.aiProvider.evaluateVerification(postObservation, expectation);
+        const verification = await runProvider.evaluateVerification(postObservation, expectation);
 
         // Check for bug detection
         let bug: CandidateBug | null = null;
@@ -536,6 +568,7 @@ export class AgentOrchestrator {
         error: err?.message || String(err)
       };
     } finally {
+      this.runtimeManager.releaseRunLock(runId);
       if (activeBrowserSession) {
         await this.browserManager.closeSession(activeBrowserSession.sessionId).catch(() => {});
       }

@@ -473,3 +473,84 @@ export interface ModelUsageRecord {
   latencyMs: number;
   timestamp: string;
 }
+
+// ==========================================
+// 8. Settings V2 & Secure AI Configuration Types
+// ==========================================
+
+export type AiProviderId = 'gemini' | 'openai' | 'anthropic' | 'ollama' | 'deterministic';
+
+export type ProviderConnectionStatus =
+  | 'NOT_CONFIGURED'
+  | 'SAVED_UNVERIFIED'
+  | 'VERIFYING'
+  | 'CONNECTED'
+  | 'INVALID_CREDENTIAL'
+  | 'MODEL_UNAVAILABLE'
+  | 'INFERENCE_FAILED'
+  | 'RATE_LIMITED'
+  | 'QUOTA_EXCEEDED'
+  | 'NETWORK_ERROR'
+  | 'SERVICE_UNAVAILABLE'
+  | 'CONFIGURATION_ERROR';
+
+export type AiCapabilityProfile =
+  | 'TEXT_QA'
+  | 'STRUCTURED_TEST_PLANNING'
+  | 'BROWSER_AGENT'
+  | 'VISION_QA';
+
+export interface ProviderPublicStatus {
+  id: AiProviderId;
+  name: string;
+  hasStoredCredential: boolean;
+  isConfiguredViaEnv: boolean;
+  connectionStatus: ProviderConnectionStatus;
+  selectedModel?: string;
+  availableModels: string[];
+  lastTestedAt?: string;
+  lastLatencyMs?: number;
+  errorReason?: string;
+  endpointUrl?: string;
+}
+
+export interface ProviderConnectionResult {
+  providerId: AiProviderId;
+  status: ProviderConnectionStatus;
+  selectedModel?: string;
+  availableModels: string[];
+  latencyMs?: number;
+  checkedAt: string;
+  details?: string;
+  inferenceReady: boolean;
+}
+
+export interface ActiveAiRuntime {
+  providerId: AiProviderId;
+  providerName: string;
+  modelId: string;
+  status: ProviderConnectionStatus;
+  inferenceReady: boolean;
+  credentialSource: 'SECURE_STORE' | 'ENVIRONMENT' | 'BUILTIN';
+  providerType: 'cloud' | 'local' | 'deterministic';
+  lastVerifiedAt?: string;
+}
+
+export interface SettingsUpdateRequest {
+  activeProvider?: AiProviderId;
+  defaultExecutionMode?: ExecutionMode;
+  ollamaBaseUrl?: string;
+}
+
+export interface PublicSettingsResponse {
+  activeProvider: AiProviderId;
+  activeRuntime: ActiveAiRuntime;
+  providers: Record<AiProviderId, ProviderPublicStatus>;
+  executionMode: ExecutionMode;
+  securityPolicy: {
+    strictMode: boolean;
+    blockedExternalDomains: string[];
+    allowAutoExternalSubmit: boolean;
+  };
+}
+

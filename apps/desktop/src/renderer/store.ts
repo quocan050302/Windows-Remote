@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ExecutionMode, TaskStatus, CandidateBug, ReportDraft, TaskRecord, TestPlan, EvidenceRecord } from '@test-io-agent/shared';
+import type { ExecutionMode, TaskStatus, CandidateBug, ReportDraft, TaskRecord, TestPlan, EvidenceRecord, ActiveAiRuntime } from '@test-io-agent/shared';
 import { apiClient, type RuntimeInfo } from './api';
 
 export interface StudioState {
@@ -29,6 +29,7 @@ export interface StudioState {
   mcpConnected: boolean;
   browserConnected: boolean;
   modelReady: boolean;
+  activeAiRuntime: ActiveAiRuntime | null;
   runtimeInfo: RuntimeInfo;
   liveScreenshotBase64?: string;
   liveLogs: string[];
@@ -39,6 +40,7 @@ export interface StudioState {
   setExecutionMode: (mode: ExecutionMode) => void;
   setTargetUrl: (url: string) => void;
   checkRuntime: () => Promise<void>;
+  fetchActiveAiStatus: () => Promise<void>;
   fetchTasks: () => Promise<void>;
   fetchPlan: (taskId: string) => Promise<void>;
   importTask: (taskData: any) => Promise<any>;
@@ -80,6 +82,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   mcpConnected: false,
   browserConnected: true,
   modelReady: true,
+  activeAiRuntime: null,
   runtimeInfo: { type: 'browser-api', label: 'Detecting runtime...' },
   liveScreenshotBase64: undefined,
   liveLogs: [],
@@ -91,6 +94,15 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   checkRuntime: async () => {
     const info = await apiClient.detectRuntime();
     set({ runtimeInfo: info });
+  },
+
+  fetchActiveAiStatus: async () => {
+    try {
+      const runtime = await apiClient.getActiveAiStatus();
+      if (runtime) {
+        set({ activeAiRuntime: runtime, modelReady: runtime.inferenceReady });
+      }
+    } catch (_) {}
   },
 
   fetchTasks: async () => {

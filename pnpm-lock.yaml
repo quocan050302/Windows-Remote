@@ -31,6 +31,9 @@ importers:
       '@test-io-agent/agent-core':
         specifier: workspace:*
         version: link:../../packages/agent-core
+      '@test-io-agent/ai-providers':
+        specifier: workspace:*
+        version: link:../../packages/ai-providers
       '@test-io-agent/browser-adapter':
         specifier: workspace:*
         version: link:../../packages/browser-adapter

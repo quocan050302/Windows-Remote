@@ -21,7 +21,9 @@ export const Dashboard: React.FC = () => {
     browserConnected, 
     executionMode, 
     runtimeInfo,
+    activeAiRuntime,
     checkRuntime,
+    fetchActiveAiStatus,
     fetchMetrics,
     fetchTasks,
     fetchMcpStatus,
@@ -32,10 +34,11 @@ export const Dashboard: React.FC = () => {
 
   useEffect(() => {
     checkRuntime();
+    fetchActiveAiStatus();
     fetchMetrics();
     fetchTasks();
     fetchMcpStatus();
-  }, [checkRuntime, fetchMetrics, fetchTasks, fetchMcpStatus]);
+  }, [checkRuntime, fetchActiveAiStatus, fetchMetrics, fetchTasks, fetchMcpStatus]);
 
   const isDisconnected = runtimeInfo.type === 'disconnected';
 
@@ -138,13 +141,24 @@ export const Dashboard: React.FC = () => {
         {/* Reasoning Engine */}
         <div className="glass-panel p-4 flex items-center gap-3.5">
           <div className="p-3 rounded-xl bg-purple-500/10 text-purple-400">
-            <Activity className="w-6 h-6" />
+            <Cpu className="w-6 h-6" />
           </div>
           <div>
             <div className="text-xs text-slate-400 font-medium">Reasoning Engine</div>
             <div className="text-sm font-semibold text-white flex items-center gap-1.5 mt-0.5">
-              <span className="w-2 h-2 rounded-full bg-purple-400"></span>
-              Deterministic QA v1
+              <span className={`w-2 h-2 rounded-full ${
+                activeAiRuntime?.inferenceReady ? 'bg-emerald-400' : 'bg-purple-400'
+              }`}></span>
+              {activeAiRuntime ? (
+                <span>
+                  {activeAiRuntime.providerName}
+                </span>
+              ) : (
+                'Deterministic QA Engine'
+              )}
+            </div>
+            <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+              {activeAiRuntime?.modelId || 'qa-deterministic-v1'} • {activeAiRuntime?.status === 'CONNECTED' ? 'Connected' : 'Offline'}
             </div>
           </div>
         </div>
