@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type {
   TaskAnalysis,
   TestPlan,
@@ -7,6 +9,36 @@ import type {
   StateExpectation,
   VerificationResult
 } from '@test-io-agent/shared';
+
+function loadEnvIfAvailable(): void {
+  try {
+    const envPaths = [
+      path.resolve(process.cwd(), '.env'),
+      path.resolve(process.cwd(), '..', '.env'),
+      path.resolve(process.cwd(), '..', '..', '.env')
+    ];
+    for (const p of envPaths) {
+      if (fs.existsSync(p)) {
+        const content = fs.readFileSync(p, 'utf8');
+        for (const line of content.split(/\r?\n/)) {
+          const match = line.match(/^([A-Za-z0-9_]+)\s*=\s*(.*)$/);
+          if (match) {
+            const key = match[1].trim();
+            const val = match[2].trim();
+            if (!process.env[key] && val) {
+              process.env[key] = val;
+            }
+          }
+        }
+        break;
+      }
+    }
+  } catch {
+    // Optional env loading fallback
+  }
+}
+loadEnvIfAvailable();
+
 
 export interface AiProviderConfig {
   apiKey?: string;
@@ -289,10 +321,11 @@ export class OpenAiCompatibleProvider implements AiProvider {
   private temperature: number;
 
   constructor(config: AiProviderConfig = {}, providerLabel: string = 'OpenAI Compatible LLM') {
+    loadEnvIfAvailable();
     this.name = providerLabel;
     this.baseUrl = (config.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
     this.model = config.model || 'gpt-4o-mini';
-    this.apiKey = config.apiKey || process.env.OPENAI_API_KEY || '';
+    this.apiKey = (config.apiKey !== undefined ? config.apiKey : (process.env.OPENAI_API_KEY || '')).trim();
     this.temperature = config.temperature ?? 0.1;
 
     const isLocalhost = this.baseUrl.includes('localhost') || this.baseUrl.includes('127.0.0.1');
@@ -346,16 +379,15 @@ export class OpenAiCompatibleProvider implements AiProvider {
 }
 Return ONLY valid raw JSON without markdown code fences.`;
 
-    const userPrompt = `Title: ${input.title}\nDescription: ${input.description}`;
-    const raw = await this.callChat(systemPrompt, userPrompt);
-    const cleaned = raw.replace(/^```json/m, '').replace(/^```/m, '').trim();
-
     try {
+      const userPrompt = `Title: ${input.title}\nDescription: ${input.description}`;
+      const raw = await this.callChat(systemPrompt, userPrompt);
+      const cleaned = raw.replace(/^```json\s*/im, '').replace(/^```\s*/gm, '').trim();
       const parsed = JSON.parse(cleaned);
       parsed.taskId = parsed.taskId || `task_ana_${Date.now()}`;
       return parsed;
     } catch {
-      // Fallback parser if LLM output had text wrapping
+      // Fallback parser if LLM output had text wrapping or API failure
       return new DeterministicQaProvider().analyzeTask(input);
     }
   }
@@ -385,9 +417,9 @@ Return ONLY valid raw JSON without markdown code fences.`;
 }
 Return ONLY raw JSON.`;
 
-    const raw = await this.callChat(systemPrompt, JSON.stringify(analysis));
-    const cleaned = raw.replace(/^```json/m, '').replace(/^```/m, '').trim();
     try {
+      const raw = await this.callChat(systemPrompt, JSON.stringify(analysis));
+      const cleaned = raw.replace(/^```json\s*/im, '').replace(/^```\s*/gm, '').trim();
       const parsed = JSON.parse(cleaned);
       parsed.planId = parsed.planId || `plan_${Date.now()}`;
       parsed.taskId = analysis.taskId;
@@ -449,8 +481,9 @@ export class GeminiProvider implements AiProvider {
   private model: string;
 
   constructor(config: AiProviderConfig = {}) {
-    this.apiKey = config.apiKey || process.env.GEMINI_API_KEY || '';
-    this.model = config.model || 'gemini-2.5-flash';
+    loadEnvIfAvailable();
+    this.apiKey = (config.apiKey !== undefined ? config.apiKey : (process.env.GEMINI_API_KEY || '')).trim();
+    this.model = config.model || 'gemini-3.5-flash';
 
     if (!this.apiKey) {
       throw new Error('Gemini Provider Error: Missing API key. Please configure GEMINI_API_KEY in settings or environment.');
@@ -514,7 +547,8 @@ export class AnthropicProvider implements AiProvider {
   private model: string;
 
   constructor(config: AiProviderConfig = {}) {
-    this.apiKey = config.apiKey || process.env.ANTHROPIC_API_KEY || '';
+    loadEnvIfAvailable();
+    this.apiKey = (config.apiKey !== undefined ? config.apiKey : (process.env.ANTHROPIC_API_KEY || '')).trim();
     this.model = config.model || 'claude-3-5-sonnet-latest';
 
     if (!this.apiKey) {

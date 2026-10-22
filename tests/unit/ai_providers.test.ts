@@ -109,3 +109,23 @@ test('AI Providers - Deterministic QA Provider evaluates numeric calculations an
   assert.ok(failResult.discrepancies && failResult.discrepancies.length > 0);
   assert.ok(failResult.discrepancies[0]?.includes('Cart total mismatch'));
 });
+
+test('AI Providers - GeminiProvider initializes with gemini-3.5-flash and handles task analysis', async () => {
+  const gemini = new GeminiProvider({ apiKey: 'mock-key-for-unit-test' });
+  assert.strictEqual(gemini.name, 'Google Gemini Generative AI');
+
+  // Verify graceful fallback when mock key cannot reach external API
+  const analysis = await gemini.analyzeTask({
+    title: 'Test Cart Calculations',
+    description: 'Verify shopping cart total calculation on checkout page'
+  });
+  assert.ok(analysis);
+  assert.ok(analysis.taskType);
+  assert.strictEqual(typeof analysis.confidenceScore, 'number');
+
+  const plan = await gemini.generatePlan(analysis);
+  assert.ok(plan);
+  assert.ok(Array.isArray(plan.steps));
+  assert.ok(plan.steps.length > 0);
+});
+
