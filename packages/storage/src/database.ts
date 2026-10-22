@@ -210,6 +210,7 @@ export class AgentStudioDatabase {
         sha256_hash TEXT NOT NULL,
         is_redacted INTEGER NOT NULL DEFAULT 0,
         captured_at TEXT NOT NULL,
+        category TEXT DEFAULT 'FUNCTIONAL_EVIDENCE',
         FOREIGN KEY(run_id) REFERENCES agent_runs(id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_evidence_hash ON evidence(sha256_hash);
@@ -288,7 +289,6 @@ export class AgentStudioDatabase {
       );
     `);
 
-    // Safe migration: Add optional authorization columns if missing in existing database files
     try {
       this.db.exec(`ALTER TABLE authorizations ADD COLUMN status TEXT;`);
     } catch { /* already exists */ }
@@ -300,6 +300,15 @@ export class AgentStudioDatabase {
     } catch { /* already exists */ }
     try {
       this.db.exec(`ALTER TABLE authorizations ADD COLUMN updated_at TEXT;`);
+    } catch { /* already exists */ }
+    try {
+      this.db.exec(`ALTER TABLE test_plans ADD COLUMN plan_version INTEGER DEFAULT 1;`);
+    } catch { /* already exists */ }
+    try {
+      this.db.exec(`ALTER TABLE test_plans ADD COLUMN requirements_fingerprint TEXT;`);
+    } catch { /* already exists */ }
+    try {
+      this.db.exec(`ALTER TABLE evidence ADD COLUMN category TEXT DEFAULT 'FUNCTIONAL_EVIDENCE';`);
     } catch { /* already exists */ }
   }
 
@@ -394,17 +403,21 @@ export class AgentStudioDatabase {
 
   public saveTestPlan(plan: TestPlan): void {
     const stmtPlan = this.db.prepare(`
-      INSERT INTO test_plans (id, task_id, summary, boundaries_json, created_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO test_plans (id, task_id, summary, boundaries_json, plan_version, requirements_fingerprint, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         summary = excluded.summary,
-        boundaries_json = excluded.boundaries_json
+        boundaries_json = excluded.boundaries_json,
+        plan_version = excluded.plan_version,
+        requirements_fingerprint = excluded.requirements_fingerprint
     `);
     stmtPlan.run(
       plan.planId,
       plan.taskId,
       plan.summary,
       JSON.stringify(plan.outOfScopeBoundaries),
+      plan.planVersion || 1,
+      plan.requirementsFingerprint || null,
       plan.createdAt
     );
 
@@ -483,8 +496,19 @@ export class AgentStudioDatabase {
       summary: planRow.summary as string,
       outOfScopeBoundaries: planRow.boundaries_json ? JSON.parse(planRow.boundaries_json as string) : [],
       steps,
+      planVersion: (planRow.plan_version as number) || 1,
+      requirementsFingerprint: (planRow.requirements_fingerprint as string) || undefined,
       createdAt: planRow.created_at as string
     };
+  }
+
+  public deleteTestPlanForTask(taskId: string): void {
+    const stmtFind = this.db.prepare(`SELECT id FROM test_plans WHERE task_id = ?`);
+    const rows = stmtFind.all(taskId) as Array<Record<string, unknown>>;
+    for (const r of rows) {
+      this.db.prepare(`DELETE FROM test_steps WHERE plan_id = ?`).run(r.id as string);
+    }
+    this.db.prepare(`DELETE FROM test_plans WHERE task_id = ?`).run(taskId);
   }
 
   private mapAuthorizationRow(r: Record<string, unknown>): AuthorizationRecord {
@@ -729,11 +753,12 @@ export class AgentStudioDatabase {
   public saveEvidence(evidence: EvidenceRecord): void {
     const stmt = this.db.prepare(`
       INSERT INTO evidence (
-        id, run_id, step_id, type, file_path, file_size_bytes, sha256_hash, is_redacted, captured_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, run_id, step_id, type, file_path, file_size_bytes, sha256_hash, is_redacted, captured_at, category
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         file_path = excluded.file_path,
-        sha256_hash = excluded.sha256_hash
+        sha256_hash = excluded.sha256_hash,
+        category = excluded.category
     `);
     stmt.run(
       evidence.id,
@@ -744,7 +769,8 @@ export class AgentStudioDatabase {
       evidence.fileSizeBytes,
       evidence.sha256Hash,
       evidence.isRedacted ? 1 : 0,
-      evidence.capturedAt
+      evidence.capturedAt,
+      evidence.category || 'FUNCTIONAL_EVIDENCE'
     );
   }
 
@@ -761,7 +787,8 @@ export class AgentStudioDatabase {
       fileSizeBytes: r.file_size_bytes as number,
       sha256Hash: r.sha256_hash as string,
       isRedacted: Boolean(r.is_redacted),
-      capturedAt: r.captured_at as string
+      capturedAt: r.captured_at as string,
+      category: (r.category as any) || 'FUNCTIONAL_EVIDENCE'
     };
   }
 
@@ -929,7 +956,8 @@ export class AgentStudioDatabase {
       fileSizeBytes: r.file_size_bytes as number,
       sha256Hash: r.sha256_hash as string,
       isRedacted: Boolean(r.is_redacted),
-      capturedAt: r.captured_at as string
+      capturedAt: r.captured_at as string,
+      category: (r.category as any) || 'FUNCTIONAL_EVIDENCE'
     }));
   }
 

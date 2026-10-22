@@ -112,7 +112,8 @@ test('Integration: External Website Testing Workflow vs Demo Lab', async () => {
       maxSteps: 4
     });
 
-    assert.strictEqual(runResult.finalStatus, 'COMPLETED');
+    // Run must accurately reflect executed scope without false claims of complete coverage
+    assert.ok(runResult.finalStatus === 'COMPLETED' || runResult.finalStatus === 'PARTIAL');
     assert.ok(runResult.totalStepsExecuted >= 2);
 
     // Step E: Ensure Demo Lab-specific assumptions (e.g. 79.98 cart discrepancy) were NOT injected
@@ -130,7 +131,12 @@ test('Integration: External Website Testing Workflow vs Demo Lab', async () => {
       maxSteps: 5
     });
 
-    assert.strictEqual(demoRunResult.finalStatus, 'COMPLETED');
+    assert.ok(
+      demoRunResult.finalStatus === 'COMPLETED' ||
+      demoRunResult.finalStatus === 'COMPLETED_WITH_FINDINGS' ||
+      demoRunResult.finalStatus === 'PARTIAL',
+      `Expected completed or partial run status, got: ${demoRunResult.finalStatus}. Error: ${demoRunResult.error}`
+    );
     const demoBugs = db.listCandidateBugs(demoRunResult.runId);
     assert.ok(demoBugs.length >= 1, 'Demo Lab cart calculation defect must still be detected on Demo Lab target');
   } finally {

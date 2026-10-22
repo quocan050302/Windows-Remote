@@ -5,6 +5,7 @@ import type {
   TestingModuleType,
   TestPlan,
   RunResult,
+  RunStatus,
   StopResult,
   ActionContext,
   CandidateBug,
@@ -13,24 +14,37 @@ import type {
   AuthorizationRecord,
   CreateAuthorizationDto,
   AuthorizationEvaluationResult,
-  StateExpectation
+  StateExpectation,
+  StepExecutionResult,
+  StepVerificationStatus,
+  RequirementsCoverageMatrix,
+  TestRequirementItem,
+  PageObservation
 } from '@test-io-agent/shared';
 import type { AgentStudioDatabase } from '@test-io-agent/storage';
 import { AuditLogService, checkActionPermission } from '@test-io-agent/policy-engine';
 import { createAiProvider, type AiProvider } from '@test-io-agent/ai-providers';
 import {
   BrowserSessionManager,
-  browserSessionManager
+  browserSessionManager,
+  detectAccessBlocker,
+  verifyApplicationReady
 } from '@test-io-agent/browser-adapter';
 import { EvidenceService } from '@test-io-agent/evidence';
 import { generateReportDraft, validateReportDraft } from '@test-io-agent/report-engine';
 import { detectCandidateBug, verifyCandidateBug } from '@test-io-agent/test-intelligence';
 import { AiRuntimeManager } from './ai_runtime_manager.js';
+import {
+  extractTestRequirements,
+  buildCoverageMatrix,
+  computeRequirementsFingerprint
+} from './requirements_coverage.js';
+import { verifyActionPostcondition } from './verification_engine.js';
 
 export interface ActiveRunState {
   runId: string;
   taskId: string;
-  status: 'RUNNING' | 'PAUSED' | 'CANCELLED' | 'COMPLETED' | 'FAILED' | 'BLOCKED';
+  status: RunStatus;
   currentStep: number;
   totalSteps: number;
   activeStepGoal?: string;
@@ -45,6 +59,9 @@ export interface ActiveRunState {
   evidence: EvidenceRecord[];
   error?: string;
   blockerReason?: string;
+  providerUsed?: string;
+  modelUsed?: string;
+  coverageMatrix?: RequirementsCoverageMatrix;
 }
 
 export class AgentOrchestrator {
@@ -245,6 +262,12 @@ export class AgentOrchestrator {
       confidenceScore: 0.95
     };
     const plan = await provider.generatePlan(safeAnalysis);
+    plan.planVersion = 1;
+    plan.requirementsFingerprint = computeRequirementsFingerprint(
+      { title: safeAnalysis.targetApplication, description: (safeAnalysis.requirements || []).join(' ') },
+      safeAnalysis,
+      this.runtimeManager.getActiveConfig().modelId
+    );
     this.db.saveTestPlan(plan);
     return plan;
   }
@@ -337,21 +360,35 @@ export class AgentOrchestrator {
     };
     this.activeRuns.set(runId, runState);
 
+    let unverifiedSteps = 0;
+    const stepExecutionResults: StepExecutionResult[] = [];
+
     try {
-      // 1. Fetch task and plan
+      // 1. Synchronize provider with settings before locking
+      await this.runtimeManager.syncWithSettings();
+      const runProvider = this.runtimeManager.getProviderForRun(runId);
+      const runModelId = this.runtimeManager.getModelIdForRun(runId);
+      const runtimeStatus = this.runtimeManager.getActiveAiRuntimeStatus();
+
+      runState.providerUsed = runProvider.name;
+      runState.modelUsed = runModelId;
+
+      runState.logs.push(
+        `[${new Date().toLocaleTimeString()}] Reasoning Engine bound: ${runProvider.name} (Model: ${runModelId}, Status: ${runtimeStatus.status})`
+      );
+
+      // 2. Fetch or auto-analyze task
       let task = this.db.getTask(taskId);
       if (!task) {
-        // Auto-create task if not already present
         const analysis = await this.analyzeTask({
           id: taskId,
-          title: 'Automated Cart & Product Flow Verification',
-          description: `Verify Shopping Cart functionality on ${targetUrl}. Do not submit checkout payments.`,
+          title: 'Automated Functional Verification',
+          description: `Verify functional navigation, CTAs, carousels, and interactive elements on ${targetUrl}.`,
           targetUrl
         });
         task = this.db.getTask(taskId)!;
       }
 
-      // If task exists but was not analyzed yet (e.g. seeded demo task), analyze it now
       if (!task.analysis) {
         task.analysis = await this.analyzeTask({
           id: task.id,
@@ -362,9 +399,25 @@ export class AgentOrchestrator {
         });
       }
 
+      // 3. Plan versioning & requirements fingerprint invalidation
+      const expectedFingerprint = computeRequirementsFingerprint(
+        { title: task.title, description: task.description, targetUrl: task.targetUrl || targetUrl },
+        task.analysis,
+        runModelId
+      );
+
       let testPlan = this.db.getTestPlanForTask(taskId);
-      if (!testPlan) {
+      if (!testPlan || testPlan.requirementsFingerprint !== expectedFingerprint) {
+        if (testPlan) {
+          runState.logs.push(
+            `[${new Date().toLocaleTimeString()}] Task scope or model changed. Regenerating authoritative test plan...`
+          );
+          this.db.deleteTestPlanForTask(taskId);
+        }
         testPlan = await this.generateTestPlan(task.analysis);
+        testPlan.requirementsFingerprint = expectedFingerprint;
+        testPlan.planVersion = (testPlan.planVersion || 1) + 1;
+        this.db.saveTestPlan(testPlan);
       }
       runState.totalSteps = testPlan.steps.length;
 
@@ -377,18 +430,19 @@ export class AgentOrchestrator {
         startTime: new Date().toISOString()
       });
 
-      // 2. Strict Authorization Verification
+      // 4. Strict Authorization Verification
       const authEval = this.db.evaluateTargetAuthorization(targetUrl);
       if (!authEval.isAuthorized || !authEval.authorization) {
-        runState.status = 'BLOCKED';
+        runState.status = 'BLOCKED_AUTHORIZATION';
         runState.error = authEval.reason;
         runState.blockerReason = authEval.reason;
+        runState.activeStepGoal = undefined;
         runState.latestScreenshotBase64 = undefined;
-        runState.logs.push(`[${new Date().toLocaleTimeString()}] BLOCKED: ${authEval.reason}`);
+        runState.logs.push(`[${new Date().toLocaleTimeString()}] BLOCKED_AUTHORIZATION: ${authEval.reason}`);
 
         this.db.updateRun({
           id: runId,
-          status: 'BLOCKED',
+          status: 'BLOCKED_AUTHORIZATION',
           totalSteps: 0,
           passedSteps: 0,
           failedSteps: 0,
@@ -399,13 +453,15 @@ export class AgentOrchestrator {
         return {
           runId,
           taskId,
-          finalStatus: 'BLOCKED',
+          finalStatus: 'BLOCKED_AUTHORIZATION',
           totalStepsExecuted: 0,
           passedSteps: 0,
           failedSteps: 0,
           bugsFound: 0,
           durationMs: Date.now() - startTime,
-          error: authEval.reason
+          error: authEval.reason,
+          providerUsed: runProvider.name,
+          modelUsed: runModelId
         };
       }
 
@@ -420,14 +476,11 @@ export class AgentOrchestrator {
         executionMode: 'AUTHORIZED_AUTO_MODE'
       };
 
-      runState.logs.push(`[${new Date().toLocaleTimeString()}] Authorization verified: Grant '${auth.id}' by '${auth.grantingOrgOrPerson}'.`);
+      runState.logs.push(
+        `[${new Date().toLocaleTimeString()}] Authorization verified: Grant '${auth.id}' by '${auth.grantingOrgOrPerson}'.`
+      );
 
-      // Bind and lock reasoning engine for this run
-      const runProvider = this.runtimeManager.getProviderForRun(runId);
-      const runModelId = this.runtimeManager.getModelIdForRun(runId);
-      runState.logs.push(`[${new Date().toLocaleTimeString()}] Reasoning Engine bound: ${runProvider.name} (Model: ${runModelId})`);
-
-      // 3. Initialize Browser Session
+      // 5. Initialize Browser Session
       activeBrowserSession = await this.browserManager.createBrowserSession(
         { headless: true },
         auth
@@ -453,9 +506,103 @@ export class AgentOrchestrator {
       );
       runState.logs.push(`[${new Date().toLocaleTimeString()}] Opened authorized browser tab for ${targetUrl}`);
 
-      // 4. Observation - Action - Verification Loop
+      // Inspect initial observation
+      const initialObservation = await this.browserManager.inspectWebPage(activePage.pageId);
+
+      // 6. Security Blocker & Cloudflare Challenge Check
+      const accessBlocker = detectAccessBlocker(initialObservation);
+      if (accessBlocker) {
+        runState.status = accessBlocker.recommendedRunStatus;
+        runState.error = accessBlocker.diagnosticDetails;
+        runState.blockerReason = accessBlocker.diagnosticDetails;
+        runState.activeStepGoal = undefined;
+
+        runState.logs.push(
+          `[${new Date().toLocaleTimeString()}] ${accessBlocker.recommendedRunStatus}: ${accessBlocker.diagnosticDetails}`
+        );
+        for (const sig of accessBlocker.signalsDetected) {
+          runState.logs.push(`[${new Date().toLocaleTimeString()}] DIAGNOSTIC SIGNAL: ${sig}`);
+        }
+
+        // Save diagnostic evidence screenshot
+        const diagEvidence = await this.evidenceService.captureEvidence(runId, {
+          type: 'SCREENSHOT',
+          content: initialScreenshot,
+          filenamePrefix: 'diagnostic_blocker',
+          category: 'DIAGNOSTIC'
+        });
+        evidenceCollected.push(diagEvidence);
+        runState.evidence.push(diagEvidence);
+
+        this.db.updateRun({
+          id: runId,
+          status: accessBlocker.recommendedRunStatus,
+          totalSteps: 0,
+          passedSteps: 0,
+          failedSteps: 0,
+          bugsFound: 0,
+          endTime: new Date().toISOString()
+        });
+
+        // Do not continue, do not click CAPTCHA, do not classify as product bug
+        return {
+          runId,
+          taskId,
+          finalStatus: accessBlocker.recommendedRunStatus,
+          totalStepsExecuted: 0,
+          passedSteps: 0,
+          failedSteps: 0,
+          bugsFound: 0,
+          durationMs: Date.now() - startTime,
+          error: accessBlocker.diagnosticDetails,
+          providerUsed: runProvider.name,
+          modelUsed: runModelId
+        };
+      }
+
+      // 7. Verify Real Page Readiness
+      const readiness = verifyApplicationReady(initialObservation, task.analysis);
+      if (!readiness.isReady) {
+        runState.status = 'NEEDS_REVIEW';
+        runState.error = readiness.reason;
+        runState.blockerReason = readiness.reason;
+        runState.activeStepGoal = undefined;
+        runState.logs.push(`[${new Date().toLocaleTimeString()}] Page readiness verification failed: ${readiness.reason}`);
+
+        this.db.updateRun({
+          id: runId,
+          status: 'NEEDS_REVIEW',
+          totalSteps: 0,
+          passedSteps: 0,
+          failedSteps: 0,
+          bugsFound: 0,
+          endTime: new Date().toISOString()
+        });
+
+        return {
+          runId,
+          taskId,
+          finalStatus: 'NEEDS_REVIEW',
+          totalStepsExecuted: 0,
+          passedSteps: 0,
+          failedSteps: 0,
+          bugsFound: 0,
+          durationMs: Date.now() - startTime,
+          error: readiness.reason,
+          providerUsed: runProvider.name,
+          modelUsed: runModelId
+        };
+      }
+
+      // 8. Extract Test Requirements & Build Coverage Baseline
+      const requirements = extractTestRequirements(task.analysis, initialObservation);
+      runState.logs.push(
+        `[${new Date().toLocaleTimeString()}] Requirements extracted: ${requirements.length} applicable test requirements mapped.`
+      );
+
+      // 9. Observation - Action - Verification Loop
       for (let stepIndex = 0; stepIndex < testPlan.steps.length && stepIndex < maxSteps; stepIndex++) {
-        // Pause handling: Wait if execution is paused
+        // Pause handling
         if (runState.isPaused) {
           runState.logs.push(`[${new Date().toLocaleTimeString()}] Paused at step ${stepIndex + 1}. Waiting for user resume...`);
           await new Promise<void>((resolve) => {
@@ -474,13 +621,31 @@ export class AgentOrchestrator {
 
         runState.logs.push(`[${new Date().toLocaleTimeString()}] Step ${step.stepNumber}/${testPlan.steps.length}: ${step.goal}`);
 
-        // A. Observe
-        const observation = await this.browserManager.inspectWebPage(activePage.pageId);
+        // A. Observe before action
+        const beforeObservation = await this.browserManager.inspectWebPage(activePage.pageId);
+
+        // Check if mid-run blocker appeared
+        const midBlocker = detectAccessBlocker(beforeObservation);
+        if (midBlocker) {
+          runState.status = midBlocker.recommendedRunStatus;
+          runState.error = midBlocker.diagnosticDetails;
+          runState.blockerReason = midBlocker.diagnosticDetails;
+          runState.logs.push(`[${new Date().toLocaleTimeString()}] ${midBlocker.recommendedRunStatus}: ${midBlocker.diagnosticDetails}`);
+          break;
+        }
 
         // B. Choose Action via configured AI Provider
-        const action = await runProvider.chooseAction(observation, testPlan, stepIndex);
+        let action;
+        try {
+          action = await runProvider.chooseAction(beforeObservation, testPlan, stepIndex);
+        } catch (inferErr: any) {
+          const inferMsg = inferErr?.message || String(inferErr);
+          runState.logs.push(`[${new Date().toLocaleTimeString()}] AI INFERENCE ERROR: ${inferMsg}`);
+          runState.status = 'NEEDS_REVIEW';
+          runState.error = inferMsg;
+          break;
+        }
 
-        // Extract action-specific destination domain if action provides a target URL
         let actionDomain = targetDomain;
         if (action.url) {
           try {
@@ -508,6 +673,21 @@ export class AgentOrchestrator {
           );
           runState.logs.push(`[${new Date().toLocaleTimeString()}] BLOCKED: ${permDecision.reason}`);
           failedSteps++;
+
+          stepExecutionResults.push({
+            stepId: step.stepId,
+            runId,
+            outcome: 'BLOCKED',
+            actionExecuted: false,
+            actionSucceeded: false,
+            postconditionChecked: false,
+            verificationStatus: 'BLOCKED',
+            actualObservation: `Blocked by policy: ${permDecision.reason}`,
+            matchedExpectation: false,
+            notes: permDecision.reason,
+            durationMs: 0,
+            evidenceIds: []
+          });
           continue;
         }
 
@@ -518,11 +698,14 @@ export class AgentOrchestrator {
           permDecision
         );
 
+        const actionExecuted = true;
+        const actionSucceeded = actionResult.success;
+
         this.auditLogger.record(
           `executeBrowserAction:${action.type}`,
           actionResult.actionSummary,
           'ALLOW',
-          actionResult.success ? 'SUCCESS' : 'FAILED',
+          actionSucceeded ? 'SUCCESS' : 'FAILED',
           { taskId, runId, targetDomain: actionDomain }
         );
         runState.logs.push(`[${new Date().toLocaleTimeString()}] Executed: ${actionResult.actionSummary}`);
@@ -562,13 +745,14 @@ export class AgentOrchestrator {
           type: 'SCREENSHOT',
           content: screenshotBuf,
           stepId: step.stepId,
-          filenamePrefix: `step_${step.stepNumber}`
+          filenamePrefix: `step_${step.stepNumber}`,
+          category: 'FUNCTIONAL_EVIDENCE'
         });
+        evidence.category = 'FUNCTIONAL_EVIDENCE';
         evidenceCollected.push(evidence);
         runState.evidence.push(evidence);
 
-        // Evaluate expectation using AI Provider & Test Intelligence
-        // Demo cart total calculation verification only applies to Demo Lab cart tasks
+        // Expectation setup
         const isDemoCartLab =
           (targetDomain === 'localhost' || targetDomain === '127.0.0.1' || task.title.includes('[DEMO]')) &&
           (step.goal.toLowerCase().includes('cart') ||
@@ -581,16 +765,24 @@ export class AgentOrchestrator {
 
         const expectation: StateExpectation = {
           numericCalculation: expectedNumeric !== undefined ? { expected: expectedNumeric } : undefined,
+          expectedText: step.expectedBehavior.length > 5 && !step.expectedBehavior.includes('accurately') ? step.expectedBehavior : undefined,
           elementState: step.targetSelector ? { selector: step.targetSelector, shouldBeVisible: true } : undefined
         };
 
-        const verification = await runProvider.evaluateVerification(postObservation, expectation);
+        // F. Verification via verifyActionPostcondition
+        const postVerification = verifyActionPostcondition(
+          action,
+          beforeObservation,
+          postObservation,
+          expectation
+        );
+
+        const postconditionChecked = true;
+        const verificationStatus: StepVerificationStatus = postVerification.status;
 
         // Check for bug detection
         let bug: CandidateBug | null = null;
-        if (expectedNumeric !== undefined) {
-          bug = detectCandidateBug(postObservation, expectation, { runId, stepId: step.stepId });
-        } else if (!verification.passed) {
+        if (!postVerification.passed && postVerification.status === 'FAIL') {
           bug = detectCandidateBug(postObservation, expectation, { runId, stepId: step.stepId });
         }
 
@@ -601,18 +793,37 @@ export class AgentOrchestrator {
           runState.candidateBugs.push(bug);
 
           runState.logs.push(`[${new Date().toLocaleTimeString()}] BUG DETECTED: ${bug.title} (Actual: ${bug.actualResult})`);
-          await verifyCandidateBug(bug);
+          await verifyCandidateBug(bug, postObservation, expectation);
           failedSteps++;
-        } else if (actionResult.success && verification.passed) {
+        } else if (actionSucceeded && verificationStatus === 'PASS') {
           runState.logs.push(`[${new Date().toLocaleTimeString()}] VERIFIED: Step ${step.stepNumber} passed.`);
           passedSteps++;
+        } else if (verificationStatus === 'UNVERIFIED') {
+          runState.logs.push(`[${new Date().toLocaleTimeString()}] UNVERIFIED: Step ${step.stepNumber} - ${postVerification.details}`);
+          unverifiedSteps++;
         } else {
-          runState.logs.push(`[${new Date().toLocaleTimeString()}] UNVERIFIED: Step ${step.stepNumber} failed expectation: ${verification.details}`);
+          runState.logs.push(`[${new Date().toLocaleTimeString()}] FAILED: Step ${step.stepNumber} failed expectation: ${postVerification.details}`);
           failedSteps++;
         }
+
+        stepExecutionResults.push({
+          stepId: step.stepId,
+          runId,
+          outcome: verificationStatus === 'PASS' ? 'PASS' : verificationStatus === 'UNVERIFIED' ? 'NEEDS_REVIEW' : 'FAIL',
+          actionExecuted,
+          actionSucceeded,
+          postconditionChecked,
+          verificationStatus,
+          actualObservation: postObservation.visibleTextSnippet.slice(0, 500),
+          matchedExpectation: verificationStatus === 'PASS',
+          notes: postVerification.details,
+          durationMs: actionResult.durationMs,
+          evidenceIds: [evidence.id],
+          candidateBugId: bug?.id
+        });
       }
 
-      // 5. Generate Report Draft
+      // 10. Generate Report Draft if genuine defects found
       let report: ReportDraft | undefined;
       if (candidateBugsFound.length > 0) {
         report = await generateReportDraft({
@@ -626,14 +837,36 @@ export class AgentOrchestrator {
         runState.logs.push(`[${new Date().toLocaleTimeString()}] Bug Report Draft generated: '${report.title}'`);
       }
 
-      // Update task status in DB
-      task.status = 'COMPLETED';
+      // 11. Build Coverage Matrix & Compute Authoritative Final Status
+      const coverageMatrix = buildCoverageMatrix(requirements, testPlan, stepExecutionResults);
+      runState.coverageMatrix = coverageMatrix;
+
+      let finalStatus: RunStatus = 'COMPLETED';
+      if (runState.status === 'BLOCKED_SITE_VERIFICATION' || runState.status === 'BLOCKED_AUTHORIZATION' || runState.status === 'BLOCKED') {
+        finalStatus = runState.status;
+      } else if (runState.status === 'NEEDS_REVIEW') {
+        finalStatus = 'NEEDS_REVIEW';
+      } else if (candidateBugsFound.length > 0) {
+        finalStatus = coverageMatrix.isComplete ? 'COMPLETED_WITH_FINDINGS' : 'PARTIAL';
+      } else if (!coverageMatrix.isComplete) {
+        finalStatus = 'PARTIAL';
+      } else if (failedSteps > 0 || unverifiedSteps > 0) {
+        finalStatus = 'COMPLETED_WITH_FINDINGS';
+      } else {
+        finalStatus = 'COMPLETED';
+      }
+
+      runState.status = finalStatus;
+      runState.activeStepGoal = undefined; // Stop displaying stale reasoning after run terminates
+
+      // Update task in DB
+      task.status = finalStatus;
       task.updatedAt = new Date().toISOString();
       this.db.saveTask(task);
 
       this.db.updateRun({
         id: runId,
-        status: 'COMPLETED',
+        status: finalStatus,
         totalSteps: totalStepsExecuted,
         passedSteps,
         failedSteps,
@@ -641,32 +874,44 @@ export class AgentOrchestrator {
         endTime: new Date().toISOString()
       });
 
-      runState.status = 'COMPLETED';
-      runState.logs.push(`[${new Date().toLocaleTimeString()}] Test run completed. Passed: ${passedSteps}, Bugs: ${candidateBugsFound.length}`);
+      runState.logs.push(
+        `[${new Date().toLocaleTimeString()}] Run finished with status ${finalStatus}. Passed: ${passedSteps}, Failed: ${failedSteps}, Unverified: ${unverifiedSteps}, Bugs: ${candidateBugsFound.length}, Coverage: ${(coverageMatrix.coverageRatio * 100).toFixed(0)}%`
+      );
 
       return {
         runId,
         taskId,
-        finalStatus: 'COMPLETED',
+        finalStatus,
         totalStepsExecuted,
         passedSteps,
         failedSteps,
+        unverifiedSteps,
         bugsFound: candidateBugsFound.length,
         durationMs: Date.now() - startTime,
-        reportId: report?.id
+        coverageMatrix,
+        reportId: report?.id,
+        providerUsed: runProvider.name,
+        modelUsed: runModelId
       };
     } catch (err: any) {
       const errMsg = err?.message || String(err);
       const isAuthBlocker = errMsg.includes('AUTHORIZATION_') || errMsg.includes('SECURITY POLICY VIOLATION');
-      runState.status = abortController.signal.aborted ? 'CANCELLED' : (isAuthBlocker ? 'BLOCKED' : 'FAILED');
+      const finalStatus: RunStatus = abortController.signal.aborted
+        ? 'CANCELLED'
+        : isAuthBlocker
+        ? 'BLOCKED_AUTHORIZATION'
+        : 'FAILED';
+
+      runState.status = finalStatus;
       runState.error = errMsg;
       runState.blockerReason = isAuthBlocker ? errMsg : undefined;
       runState.latestScreenshotBase64 = undefined;
-      runState.logs.push(`[${new Date().toLocaleTimeString()}] Run stopped with status ${runState.status}: ${runState.error}`);
+      runState.activeStepGoal = undefined;
+      runState.logs.push(`[${new Date().toLocaleTimeString()}] Run stopped with status ${finalStatus}: ${errMsg}`);
 
       this.db.updateRun({
         id: runId,
-        status: runState.status,
+        status: finalStatus,
         totalSteps: totalStepsExecuted,
         passedSteps,
         failedSteps,
@@ -677,7 +922,7 @@ export class AgentOrchestrator {
       return {
         runId,
         taskId,
-        finalStatus: runState.status,
+        finalStatus,
         totalStepsExecuted,
         passedSteps,
         failedSteps,

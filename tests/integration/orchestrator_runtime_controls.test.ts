@@ -47,7 +47,7 @@ test('Orchestrator Security - tester.test.io is unconditionally blocked from aut
     targetUrl: 'https://tester.test.io/tests/q5abce2'
   });
 
-  assert.strictEqual(result.finalStatus, 'BLOCKED');
+  assert.strictEqual(result.finalStatus, 'BLOCKED_AUTHORIZATION');
   assert.ok(result.error);
   assert.ok(result.error.includes('SECURITY POLICY VIOLATION') || result.error.includes('strictly prohibited') || result.error.includes('prohibited by policy'));
   assert.strictEqual(result.totalStepsExecuted, 0);
@@ -65,7 +65,7 @@ test('Orchestrator Security - External target without AuthorizationRecord throws
     targetUrl: 'https://unauthorized-customer-shop.com'
   });
 
-  assert.strictEqual(result.finalStatus, 'BLOCKED');
+  assert.strictEqual(result.finalStatus, 'BLOCKED_AUTHORIZATION');
   assert.ok(result.error);
   assert.ok(result.error.includes('AUTHORIZATION_REQUIRED'));
   assert.strictEqual(result.totalStepsExecuted, 0);

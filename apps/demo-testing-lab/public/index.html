@@ -126,6 +126,9 @@
     </div>
     <nav class="nav-links">
       <a id="nav-products" class="active" onclick="switchTab('products')">Products</a>
+      <a id="nav-yachts" class="category-link" data-testid="cat-yachts" onclick="selectCategory('yachts')">Yachts</a>
+      <a id="nav-sailboats" class="category-link" data-testid="cat-sailboats" onclick="selectCategory('sailboats')">Sailboats</a>
+      <a id="nav-catamarans" class="category-link" data-testid="cat-catamarans" onclick="selectCategory('catamarans')">Catamarans</a>
       <a id="nav-checklist" onclick="switchTab('checklist')">Checklist</a>
       <a id="nav-settings" onclick="switchTab('settings')">Settings</a>
     </nav>
@@ -139,10 +142,51 @@
   </header>
 
   <main>
-    <div class="banner">
-      <h1 id="banner-title">Authorized QA Testing Environment</h1>
-      <p id="banner-desc">Real synthetic test target for Test IO Agent Studio. Contains 10 toggleable intentional bugs.</p>
+    <!-- Hero Section with Primary & Secondary CTAs -->
+    <div class="hero-section" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:2rem; background:rgba(30,41,59,0.7); padding:2rem; border-radius:1rem; border:1px solid var(--card-border);">
+      <div>
+        <h1 id="hero-title" style="font-size:1.8rem; margin-bottom:0.5rem;">Explore Premium Yacht Charters & Gear</h1>
+        <p style="color:var(--text-muted); margin-bottom:1.5rem;">Verified boat rentals, sailing equipment, and yachting accessories.</p>
+        <div style="display:flex; gap:1rem;">
+          <button id="hero-cta" data-testid="hero-cta" class="btn btn-primary cta" onclick="handleHeroCta()">Explore Deals</button>
+          <button id="secondary-cta" data-testid="secondary-cta" class="btn btn-outline cta" onclick="handleSecondaryCta()">Book Early</button>
+        </div>
+        <div id="cta-status" style="margin-top:0.5rem; font-size:0.85rem; color:#60a5fa;"></div>
+      </div>
     </div>
+
+    <!-- Promotional Banner -->
+    <div id="promo-banner" data-testid="promo-banner" class="banner promo" style="cursor:pointer;" onclick="handlePromoClick()">
+      <h2 id="promo-title">Summer Yachting Sale — 50% Off!</h2>
+      <p id="promo-desc">Exclusive discounts on catamaran charters and navigation accessories. Click to view promo.</p>
+      <span id="promo-status" style="font-size:0.85rem; color:#34d399;"></span>
+    </div>
+
+    <!-- Carousel Image Slider Component -->
+    <div id="homepage-carousel" data-testid="homepage-carousel" class="carousel" style="background:var(--card-bg); border:1px solid var(--card-border); border-radius:1rem; padding:1.5rem; margin-bottom:2rem;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 style="color:#93c5fd;">Featured Fleet Highlights</h3>
+        <div style="display:flex; gap:0.5rem; align-items:center;">
+          <button id="carousel-prev" data-testid="carousel-prev" class="btn btn-outline slide-prev" onclick="changeSlide(-1)">‹ Prev</button>
+          <span id="slide-indicator" style="font-size:0.9rem; min-width:80px; text-align:center;">Slide 1 of 3</span>
+          <button id="carousel-next" data-testid="carousel-next" class="btn btn-outline slide-next" onclick="changeSlide(1)">Next ›</button>
+        </div>
+      </div>
+      <div id="carousel-slide-content" class="carousel-slide" data-active-index="0" style="padding:1.5rem; background:rgba(0,0,0,0.2); border-radius:0.5rem;">
+        <h4 id="slide-title" style="font-size:1.2rem; color:#f3f4f6;">Catamaran Sunreef 60</h4>
+        <p id="slide-desc" style="color:var(--text-muted);">Luxury catamaran with spacious flybridge and ocean views.</p>
+      </div>
+    </div>
+
+    <!-- Expandable Section / FAQ Accordion -->
+    <details id="faq-accordion" data-testid="faq-accordion" class="accordion" style="background:var(--card-bg); border:1px solid var(--card-border); border-radius:1rem; padding:1.25rem; margin-bottom:2rem;" ontoggle="handleAccordionToggle(this)">
+      <summary id="accordion-toggle" data-testid="accordion-toggle" class="accordion-header" style="font-size:1.1rem; font-weight:600; cursor:pointer; color:#93c5fd;">
+        Frequently Asked Questions & Charter Cancellation Policies
+      </summary>
+      <div id="accordion-content" class="accordion-body" style="margin-top:1rem; padding-top:1rem; border-top:1px solid var(--card-border); color:var(--text-muted);">
+        <p id="faq-text">Full refund available up to 48 hours prior to charter departure. Clean vessel guarantee and skipper included.</p>
+      </div>
+    </details>
 
     <div class="filter-bar">
       <input type="text" id="search-input" class="search-input" placeholder="Search products..." oninput="handleSearch()">
@@ -201,6 +245,8 @@
       buildMode: 'BUGGY_BUILD',
       bugs: {
         BUG_CART_TOTAL_CALCULATION: true,
+        BUG_CAROUSEL_NEXT_BROKEN: true,
+        BUG_ACCORDION_EMPTY_CONTENT: true,
         BUG_EMAIL_VALIDATION_REGEX: true,
         BUG_REQUIRED_FIELD_BYPASS: true,
         BUG_SORT_PRICE_INVERTED: true,
@@ -374,6 +420,56 @@
         badge.className = 'mode-badge mode-fixed';
         btn.textContent = 'Switch to Buggy Build';
       }
+    }
+
+    // Carousel state & functionality
+    const CAROUSEL_SLIDES = [
+      { title: "Catamaran Sunreef 60", desc: "Luxury catamaran with spacious flybridge and ocean views." },
+      { title: "Sailboat Oceanis 46.1", desc: "High-performance cruising sailboat with 3 private cabins." },
+      { title: "Motor Yacht Azimut 55", desc: "Italian styling with twin Volvo engines and sun deck." }
+    ];
+    let currentSlideIndex = 0;
+
+    function changeSlide(delta) {
+      if (config.bugs.BUG_CAROUSEL_NEXT_BROKEN && delta > 0) {
+        console.warn("BUG: Carousel next button unresponsive!");
+        return;
+      }
+      currentSlideIndex = (currentSlideIndex + delta + CAROUSEL_SLIDES.length) % CAROUSEL_SLIDES.length;
+      const slide = CAROUSEL_SLIDES[currentSlideIndex];
+      document.getElementById('slide-title').textContent = slide.title;
+      document.getElementById('slide-desc').textContent = slide.desc;
+      document.getElementById('slide-indicator').textContent = `Slide ${currentSlideIndex + 1} of ${CAROUSEL_SLIDES.length}`;
+      document.getElementById('carousel-slide-content').setAttribute('data-active-index', currentSlideIndex);
+    }
+
+    // Accordion toggle handler
+    function handleAccordionToggle(details) {
+      if (details.open && config.bugs.BUG_ACCORDION_EMPTY_CONTENT) {
+        document.getElementById('faq-text').textContent = '';
+      } else if (details.open) {
+        document.getElementById('faq-text').textContent = 'Full refund available up to 48 hours prior to charter departure. Clean vessel guarantee and skipper included.';
+      }
+    }
+
+    // CTAs & Category handlers
+    function handleHeroCta() {
+      document.getElementById('cta-status').textContent = 'CTA Activated: Showing featured charter fleet.';
+      document.getElementById('homepage-carousel').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function handleSecondaryCta() {
+      document.getElementById('cta-status').textContent = 'Early booking voucher activated for current season.';
+    }
+
+    function handlePromoClick() {
+      document.getElementById('promo-status').textContent = 'Promo code SUMMER50 applied to active session!';
+    }
+
+    function selectCategory(cat) {
+      document.querySelectorAll('.category-link').forEach(c => c.classList.remove('active'));
+      const el = document.getElementById(`nav-${cat}`);
+      if (el) el.classList.add('active');
     }
 
     // Initial render

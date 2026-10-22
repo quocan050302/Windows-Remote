@@ -9,6 +9,20 @@
 
 export type ExecutionMode = 'COPILOT_MODE' | 'SUPERVISED_MODE' | 'AUTHORIZED_AUTO_MODE';
 
+export type RunStatus =
+  | 'READY'
+  | 'RUNNING'
+  | 'PAUSED'
+  | 'COMPLETED'
+  | 'COMPLETED_WITH_FINDINGS'
+  | 'PARTIAL'
+  | 'BLOCKED_SITE_VERIFICATION'
+  | 'BLOCKED_AUTHORIZATION'
+  | 'BLOCKED'
+  | 'NEEDS_REVIEW'
+  | 'FAILED'
+  | 'CANCELLED';
+
 export type TaskStatus =
   | 'CREATED'
   | 'ANALYZING'
@@ -17,7 +31,11 @@ export type TaskStatus =
   | 'RUNNING'
   | 'PAUSED'
   | 'BLOCKED'
+  | 'BLOCKED_SITE_VERIFICATION'
+  | 'BLOCKED_AUTHORIZATION'
+  | 'PARTIAL'
   | 'COMPLETED'
+  | 'COMPLETED_WITH_FINDINGS'
   | 'FAILED'
   | 'CANCELLED';
 
@@ -106,21 +124,141 @@ export interface TestPlan {
   summary: string;
   steps: TestPlanStep[];
   outOfScopeBoundaries: string[];
+  planVersion?: number;
+  requirementsFingerprint?: string;
   createdAt: string;
 }
 
 export type StepExecutionOutcome = 'PASS' | 'FAIL' | 'BLOCKED' | 'SKIPPED' | 'NEEDS_REVIEW';
 
+export type StepVerificationStatus =
+  | 'PASS'
+  | 'FAIL'
+  | 'UNVERIFIED'
+  | 'BLOCKED'
+  | 'NOT_APPLICABLE'
+  | 'NEEDS_REVIEW';
+
 export interface StepExecutionResult {
   stepId: string;
   runId: string;
   outcome: StepExecutionOutcome;
+  actionExecuted: boolean;
+  actionSucceeded: boolean;
+  postconditionChecked: boolean;
+  verificationStatus: StepVerificationStatus;
   actualObservation: string;
   matchedExpectation: boolean;
   notes?: string;
   durationMs: number;
   evidenceIds: string[];
   candidateBugId?: string;
+}
+
+export type PageAccessState =
+  | 'NORMAL_APPLICATION_PAGE'
+  | 'AUTHENTICATION_REQUIRED'
+  | 'CAPTCHA_CHALLENGE'
+  | 'SECURITY_CHALLENGE'
+  | 'RATE_LIMITED'
+  | 'ACCESS_DENIED'
+  | 'NETWORK_FAILURE';
+
+export interface AccessBlockerResult {
+  isBlocked: boolean;
+  accessState: PageAccessState;
+  blockerType:
+    | 'CLOUDFLARE_CHALLENGE'
+    | 'CLOUDFLARE_TURNSTILE'
+    | 'BOT_DETECTION'
+    | 'CAPTCHA'
+    | 'RATE_LIMIT'
+    | 'RATE_LIMITED'
+    | 'ACCESS_DENIED'
+    | 'AUTH_REQUIRED'
+    | 'NETWORK_ERROR'
+    | 'NONE';
+  signalsDetected: string[];
+  signals?: string[];
+  confidenceScore?: number;
+  diagnosticDetails: string;
+  recommendedRunStatus:
+    | 'BLOCKED_SITE_VERIFICATION'
+    | 'BLOCKED_AUTHORIZATION'
+    | 'NEEDS_REVIEW'
+    | 'READY';
+}
+
+export interface ApplicationReadyResult {
+  isReady: boolean;
+  reason: string;
+  detectedState: PageAccessState;
+  missingPreconditions?: string[];
+}
+
+export interface TestRequirementItem {
+  id: string;
+  category:
+    | 'NAVIGATION'
+    | 'CTA'
+    | 'PROMOTIONAL'
+    | 'FEATURED_CONTENT'
+    | 'CAROUSEL'
+    | 'ACCORDION'
+    | 'FORM'
+    | 'CALCULATION'
+    | 'GENERAL_UI';
+  description: string;
+  source: string;
+  inScope: boolean;
+  targetControlDescription?: string;
+  title?: string;
+}
+
+export interface ScenarioCoverageMapping {
+  requirementId: string;
+  scenarioStepId: string;
+  objective: string;
+  targetControl: string;
+  expectedBehavior: string;
+  executionStatus: 'NOT_RUN' | 'EXECUTED' | 'FAILED' | 'BLOCKED';
+  verificationStatus: StepVerificationStatus;
+  evidenceIds: string[];
+  blockerReason?: string;
+  requirementCategory?: string;
+}
+
+export interface RequirementsCoverageMatrix {
+  taskId: string;
+  planId: string;
+  totalRequirements: number;
+  coveredRequirements: number;
+  passedCases: number;
+  failedCases: number;
+  blockedCases: number;
+  skippedCases: number;
+  unverifiedCases: number;
+  remainingRequirements: number;
+  coverageRatio: number;
+  coveragePercentage?: number;
+  passedScenarios?: number;
+  failedScenarios?: number;
+  blockedScenarios?: number;
+  unverifiedScenarios?: number;
+  uncoveredRequirements?: TestRequirementItem[];
+  scenarioMappings?: ScenarioCoverageMapping[];
+  isComplete: boolean;
+  requirements: Array<{
+    item: TestRequirementItem;
+    scenarios: ScenarioCoverageMapping[];
+    status:
+      | 'COVERED_PASS'
+      | 'COVERED_FAIL'
+      | 'BLOCKED'
+      | 'UNVERIFIED'
+      | 'UNCOVERED'
+      | 'EXCLUDED';
+  }>;
 }
 
 // ==========================================
@@ -414,6 +552,7 @@ export interface EvidenceRecord {
   runId: string;
   stepId?: string;
   type: 'SCREENSHOT' | 'TRACE' | 'CONSOLE_LOG' | 'NETWORK_HAR' | 'VIDEO';
+  category?: 'FUNCTIONAL_EVIDENCE' | 'DIAGNOSTIC' | 'AUDIT';
   filePath: string;
   fileSizeBytes: number;
   sha256Hash: string;
@@ -461,14 +600,19 @@ export interface ReportValidationResult {
 export interface RunResult {
   runId: string;
   taskId: string;
-  finalStatus: TaskStatus;
+  finalStatus: RunStatus;
   totalStepsExecuted: number;
   passedSteps: number;
   failedSteps: number;
+  unverifiedSteps?: number;
+  blockedSteps?: number;
   bugsFound: number;
   durationMs: number;
+  coverageMatrix?: RequirementsCoverageMatrix;
   reportId?: string;
   error?: string;
+  providerUsed?: string;
+  modelUsed?: string;
 }
 
 export interface StopResult {

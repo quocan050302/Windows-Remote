@@ -15,8 +15,8 @@
     "build": "npm run build --workspaces",
     "typecheck": "tsc -b",
     "lint": "eslint . --max-warnings=0 || echo 'Lint complete'",
-    "test": "npx tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
-    "test:ts": "npx tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
+    "test": "npx tsx --test --test-concurrency=1 tests/unit/*.test.ts tests/integration/*.test.ts tests/acceptance/*.test.ts",
+    "test:ts": "npx tsx --test --test-concurrency=1 tests/unit/*.test.ts tests/integration/*.test.ts tests/acceptance/*.test.ts",
     "test:e2e": "npx tsx tests/e2e/autonomous_demo.e2e.ts",
     "package:win": "npm --workspace apps/desktop run package:win"
   },

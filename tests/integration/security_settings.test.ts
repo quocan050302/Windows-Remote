@@ -133,7 +133,7 @@ test('Security Verification - Orchestrator unconditionally blocks tester.test.io
     targetUrl: 'https://tester.test.io/tests/12345/tasks'
   });
 
-  assert.strictEqual(result.finalStatus, 'BLOCKED');
+  assert.strictEqual(result.finalStatus, 'BLOCKED_AUTHORIZATION');
   assert.ok(result.error);
   assert.ok(result.error.includes('SECURITY POLICY VIOLATION') || result.error.includes('prohibited by policy'));
   assert.strictEqual(result.totalStepsExecuted, 0);

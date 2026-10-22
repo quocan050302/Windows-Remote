@@ -10,7 +10,8 @@ import type {
   ActiveAiRuntime,
   AuthorizationRecord,
   AuthorizationEvaluationResult,
-  CreateAuthorizationDto
+  CreateAuthorizationDto,
+  RequirementsCoverageMatrix
 } from '@test-io-agent/shared';
 import { apiClient, type RuntimeInfo } from './api';
 
@@ -33,6 +34,10 @@ export interface StudioState {
   tasks: TaskRecord[];
   authorizations: AuthorizationRecord[];
   targetAuthorization: AuthorizationEvaluationResult | null;
+  coverageMatrix?: RequirementsCoverageMatrix;
+  blockerReason?: string;
+  providerUsed?: string;
+  modelUsed?: string;
   metrics: {
     taskCount: number;
     activeRuns: number;
@@ -207,7 +212,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const target = targetUrl || get().targetUrl;
     const task = taskId || get().activeTaskId || 'task_demo_1';
 
-    // Clear previous run state immediately: stale screenshots, bugs, evidence, activeStepGoal
+    // Clear previous run state immediately: stale screenshots, bugs, evidence, activeStepGoal, coverage
     set({
       agentStatus: 'RUNNING',
       activeRunId: runId,
@@ -220,6 +225,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       liveScreenshotBase64: undefined,
       candidateBugs: [],
       evidence: [],
+      coverageMatrix: undefined,
+      blockerReason: undefined,
+      providerUsed: undefined,
+      modelUsed: undefined,
       liveLogs: [`[${new Date().toLocaleTimeString()}] Initializing test run ${runId} against ${target}...`]
     });
 
@@ -227,7 +236,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const evalResult = await get().evaluateTargetAuthorization(target);
     if (evalResult && !evalResult.authorized) {
       set({
-        agentStatus: 'BLOCKED',
+        agentStatus: 'BLOCKED_AUTHORIZATION',
+        blockerReason: evalResult.reason || 'Missing explicit verified authorization record.',
         liveLogs: [
           `[${new Date().toLocaleTimeString()}] [PERMISSION BLOCKED] Target URL ${target} is not authorized for autonomous AI execution.`,
           `[${new Date().toLocaleTimeString()}] Reason: ${evalResult.reason || 'Missing explicit verified authorization record.'}`,
@@ -249,7 +259,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     } catch (err: any) {
       const isAuthBlocker = err.message?.includes('AUTHORIZATION_REQUIRED') || err.message?.includes('AUTHORIZATION_REVOKED') || err.message?.includes('AUTHORIZATION_EXPIRED');
       set({
-        agentStatus: isAuthBlocker ? 'BLOCKED' : 'FAILED',
+        agentStatus: isAuthBlocker ? 'BLOCKED_AUTHORIZATION' : 'FAILED',
+        blockerReason: isAuthBlocker ? err.message : undefined,
         liveLogs: [...get().liveLogs, `[${new Date().toLocaleTimeString()}] ${isAuthBlocker ? '[PERMISSION BLOCKER]' : 'Execution Error'}: ${err.message}`]
       });
       return;
@@ -270,24 +281,30 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       try {
         const state = await apiClient.getRunState(activeId);
         if (state) {
-          const isFailedOrBlocked = state.status === 'FAILED' || state.status === 'BLOCKED';
+          const isTerminal = ['COMPLETED', 'COMPLETED_WITH_FINDINGS', 'PARTIAL', 'BLOCKED_SITE_VERIFICATION', 'BLOCKED_AUTHORIZATION', 'BLOCKED', 'NEEDS_REVIEW', 'FAILED', 'CANCELLED'].includes(state.status);
           set({
             agentStatus: state.status,
             currentStep: state.currentStep,
             totalSteps: state.totalSteps || get().totalSteps,
-            activeStepGoal: state.activeStepGoal,
-            // Do not keep or reuse old screenshot if status is failed/blocked and no new screenshot was provided
-            liveScreenshotBase64: state.latestScreenshotBase64 ? state.latestScreenshotBase64 : (isFailedOrBlocked ? undefined : get().liveScreenshotBase64),
+            // Only keep activeStepGoal if still actively running; clear when finished
+            activeStepGoal: isTerminal ? undefined : state.activeStepGoal,
+            liveScreenshotBase64: state.latestScreenshotBase64 ? state.latestScreenshotBase64 : (isTerminal ? get().liveScreenshotBase64 : get().liveScreenshotBase64),
             liveLogs: state.logs && state.logs.length > 0 ? state.logs : get().liveLogs,
             candidateBugs: state.candidateBugs || get().candidateBugs,
-            evidence: state.evidence || get().evidence
+            evidence: state.evidence || get().evidence,
+            coverageMatrix: state.coverageMatrix || get().coverageMatrix,
+            blockerReason: state.blockerReason || get().blockerReason,
+            providerUsed: state.providerUsed || get().providerUsed,
+            modelUsed: state.modelUsed || get().modelUsed
           });
 
-          if (state.status === 'COMPLETED' || state.status === 'FAILED' || state.status === 'CANCELLED' || state.status === 'BLOCKED') {
+          if (isTerminal) {
             clearInterval(interval);
             get().fetchMetrics();
             get().fetchTasks();
             get().fetchPlan(task);
+            get().evaluateTargetAuthorization(get().targetUrl);
+            get().fetchActiveAiStatus();
           }
         }
       } catch (_) {}

@@ -17,6 +17,20 @@ export function detectCandidateBug(
 ): CandidateBug | null {
   const discrepancies: string[] = [];
 
+  // Guard against false bug reports: Security challenges, Cloudflare, rate limits, and network blocks are NOT product bugs
+  const combinedText = `${observation.title || ''} ${observation.visibleTextSnippet || ''}`.toLowerCase();
+  if (
+    combinedText.includes('cloudflare') ||
+    combinedText.includes('just a moment') ||
+    combinedText.includes('verify you are human') ||
+    combinedText.includes('turnstile') ||
+    combinedText.includes('403 forbidden') ||
+    combinedText.includes('429 too many') ||
+    combinedText.includes('security check')
+  ) {
+    return null;
+  }
+
   // Check 1: Numeric Calculation (e.g. cart subtotal, tax, or total mismatch)
   if (expectation.numericCalculation) {
     const expected = expectation.numericCalculation.expected;
@@ -70,21 +84,39 @@ export function detectCandidateBug(
 
 /**
  * Verify Candidate Bug (Secondary reproduction run)
- * Contract: verifyCandidateBug(candidate): Promise<BugVerification>
+ * Contract: verifyCandidateBug(candidate, secondaryObservation?, expectation?): Promise<BugVerification>
+ * Requirement 23: Never consider a bug reproduced simply because actualResult text is nonempty.
+ * Requires an actual additional observation or labels the issue UNVERIFIED / PENDING.
  */
 export async function verifyCandidateBug(
-  candidate: CandidateBug
+  candidate: CandidateBug,
+  secondaryObservation?: PageObservation,
+  expectation?: StateExpectation
 ): Promise<BugVerification> {
-  // In a safe reproduction flow, we verify if the discrepancy is reproducible
-  const isReproduced = Boolean(candidate.actualResult && candidate.actualResult.length > 0);
+  let isReproduced = false;
+  let notes = 'Candidate defect logged as unverified; requires secondary reproduction confirmation.';
+
+  if (secondaryObservation && expectation) {
+    const secondDiscrepancy = detectCandidateBug(secondaryObservation, expectation);
+    if (secondDiscrepancy) {
+      isReproduced = true;
+      candidate.reproductionStatus = 'REPRODUCED';
+      notes = `Defect confirmed on secondary reproduction: ${secondDiscrepancy.actualResult}`;
+    } else {
+      isReproduced = false;
+      candidate.reproductionStatus = 'NOT_REPRODUCED';
+      notes = 'Defect could not be reproduced on secondary evaluation.';
+    }
+  } else {
+    candidate.reproductionStatus = 'PENDING';
+    isReproduced = false;
+  }
 
   return {
     bugId: candidate.id,
     attemptNumber: 1,
     isReproduced,
-    notes: isReproduced
-      ? `Defect confirmed on second evaluation: ${candidate.actualResult}`
-      : 'Defect could not be consistently reproduced.',
+    notes,
     verificationEvidenceIds: candidate.evidenceIds,
     timestamp: new Date().toISOString()
   };

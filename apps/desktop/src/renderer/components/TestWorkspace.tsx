@@ -51,7 +51,11 @@ export const TestWorkspace: React.FC = () => {
     triggerTakeover,
     targetAuthorization,
     evaluateTargetAuthorization,
-    createAuthorization
+    createAuthorization,
+    coverageMatrix,
+    blockerReason,
+    providerUsed,
+    modelUsed
   } = useStudioStore();
 
   const [collapseLeft, setCollapseLeft] = useState(false);
@@ -144,8 +148,13 @@ export const TestWorkspace: React.FC = () => {
             <span className={`w-3 h-3 rounded-full ${
               agentStatus === 'RUNNING' ? 'bg-emerald-400 animate-pulse' :
               agentStatus === 'PAUSED' ? 'bg-amber-400' :
-              agentStatus === 'BLOCKED' ? 'bg-amber-500 ring-2 ring-amber-500/30' :
+              agentStatus === 'BLOCKED_SITE_VERIFICATION' ? 'bg-orange-500 ring-2 ring-orange-500/40' :
+              agentStatus === 'BLOCKED_AUTHORIZATION' || agentStatus === 'BLOCKED' ? 'bg-amber-500 ring-2 ring-amber-500/30' :
+              agentStatus === 'PARTIAL' ? 'bg-yellow-400' :
+              agentStatus === 'COMPLETED_WITH_FINDINGS' ? 'bg-indigo-400' :
+              agentStatus === 'NEEDS_REVIEW' ? 'bg-purple-400' :
               agentStatus === 'CANCELLED' ? 'bg-rose-400' : 
+              agentStatus === 'FAILED' ? 'bg-red-500' :
               agentStatus === 'COMPLETED' ? 'bg-blue-400' : 'bg-slate-400'
             }`}></span>
             <span className="text-xs font-bold text-white tracking-wide uppercase">
@@ -195,8 +204,8 @@ export const TestWorkspace: React.FC = () => {
 
           <div className="text-xs text-slate-400 flex items-center gap-1.5 hidden md:flex">
             <Cpu className="w-3.5 h-3.5 text-purple-400" />
-            Reasoning Engine: <span className="text-slate-200 font-semibold">{activeAiRuntime?.providerName || 'Deterministic QA'}</span>
-            <span className="font-mono text-emerald-400 text-[11px]">({activeAiRuntime?.modelId || 'qa-deterministic-v1'})</span>
+            Reasoning Engine: <span className="text-slate-200 font-semibold">{providerUsed || activeAiRuntime?.providerName || 'Deterministic QA Engine'}</span>
+            <span className="font-mono text-emerald-400 text-[11px]">({modelUsed || activeAiRuntime?.modelId || 'qa-deterministic-v1'})</span>
           </div>
         </div>
 
@@ -288,18 +297,70 @@ export const TestWorkspace: React.FC = () => {
                 </div>
               </div>
 
-              {/* Dynamic Execution Step Tracker */}
+              {/* Requirements Coverage Matrix Summary */}
+              {coverageMatrix && (
+                <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-2 text-xs">
+                  <div className="font-semibold text-blue-400 uppercase tracking-wider flex justify-between items-center">
+                    <span>Coverage Matrix</span>
+                    <span className="font-mono text-emerald-400 font-bold">{coverageMatrix.coveragePercentage}%</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div className="text-slate-400">Total Reqs: <b className="text-white font-mono">{coverageMatrix.totalRequirements}</b></div>
+                    <div className="text-slate-400">Covered: <b className="text-emerald-400 font-mono">{coverageMatrix.coveredRequirements}</b></div>
+                    <div className="text-slate-400">Passed: <b className="text-emerald-400 font-mono">{coverageMatrix.passedScenarios}</b></div>
+                    <div className="text-slate-400">Failed: <b className="text-rose-400 font-mono">{coverageMatrix.failedScenarios}</b></div>
+                    <div className="text-slate-400">Blocked: <b className="text-orange-400 font-mono">{coverageMatrix.blockedScenarios}</b></div>
+                    <div className="text-slate-400">Unverified: <b className="text-amber-400 font-mono">{coverageMatrix.unverifiedScenarios}</b></div>
+                  </div>
+                  {coverageMatrix.uncoveredRequirements.length > 0 && (
+                    <div className="text-[10px] text-amber-300/80 pt-1 border-t border-slate-800">
+                      Uncovered: {coverageMatrix.uncoveredRequirements.map(u => u.title).join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Dynamic Execution Scenarios Tracker */}
               <div className="space-y-2 pt-1">
                 <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                  EXECUTION SEQUENCE {activePlan ? `(${activePlan.steps.length} STEPS)` : ''}
+                  TEST SCENARIOS {coverageMatrix?.scenarioMappings?.length ? `(${coverageMatrix.scenarioMappings.length})` : activePlan ? `(${activePlan.steps.length} STEPS)` : ''}
                 </div>
                 <div className="space-y-2">
-                  {(activePlan?.steps && activePlan.steps.length > 0
+                  {coverageMatrix?.scenarioMappings && coverageMatrix.scenarioMappings.length > 0 ? (
+                    coverageMatrix.scenarioMappings.map((sc, idx) => (
+                      <div key={sc.scenarioId || idx} className={`p-2.5 rounded-lg border text-xs space-y-1.5 transition-all ${
+                        sc.verificationStatus === 'PASS' ? 'bg-slate-900/60 border-emerald-500/30 text-slate-200' :
+                        sc.verificationStatus === 'FAIL' ? 'bg-rose-950/30 border-rose-500/40 text-rose-200' :
+                        sc.verificationStatus === 'BLOCKED' ? 'bg-orange-950/30 border-orange-500/40 text-orange-200' :
+                        sc.verificationStatus === 'UNVERIFIED' ? 'bg-amber-950/30 border-amber-500/40 text-amber-200' :
+                        'bg-slate-900/20 border-slate-800 text-slate-400'
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono font-bold text-slate-400">#{idx + 1} {sc.requirementCategory}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono uppercase font-bold ${
+                            sc.verificationStatus === 'PASS' ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/40' :
+                            sc.verificationStatus === 'FAIL' ? 'bg-rose-950/80 text-rose-300 border border-rose-500/40' :
+                            sc.verificationStatus === 'BLOCKED' ? 'bg-orange-950/80 text-orange-300 border border-orange-500/40' :
+                            sc.verificationStatus === 'UNVERIFIED' ? 'bg-amber-950/80 text-amber-300 border border-amber-500/40' :
+                            'bg-slate-800 text-slate-400'
+                          }`}>
+                            {sc.verificationStatus || sc.executionStatus}
+                          </span>
+                        </div>
+                        <div className="font-medium text-white">{sc.objective}</div>
+                        <div className="text-[10px] text-slate-400 space-y-0.5">
+                          <div><b className="text-slate-300">Target:</b> <span className="font-mono text-cyan-300">{sc.targetControl}</span></div>
+                          <div><b className="text-slate-300">Expected:</b> {sc.expectedBehavior}</div>
+                          {sc.blockerReason && <div className="text-orange-400"><b>Blocker:</b> {sc.blockerReason}</div>}
+                        </div>
+                      </div>
+                    ))
+                  ) : (activePlan?.steps && activePlan.steps.length > 0
                     ? activePlan.steps.map((s) => {
                         const isBugOnStep = candidateBugs.some((b) => b.stepId === s.stepId);
-                        const isStepDone = currentStep > s.stepNumber || agentStatus === 'COMPLETED';
                         const isStepActive = agentStatus === 'RUNNING' && currentStep === s.stepNumber;
-                        const status = isBugOnStep ? 'BUG_DETECTED' : isStepDone ? 'DONE' : isStepActive ? 'ACTIVE' : 'PENDING';
+                        const isPastStep = currentStep > s.stepNumber || agentStatus === 'COMPLETED' || agentStatus === 'PARTIAL' || agentStatus === 'COMPLETED_WITH_FINDINGS';
+                        const status = isBugOnStep ? 'BUG_DETECTED' : isStepActive ? 'ACTIVE' : isPastStep ? 'EXECUTED' : 'PENDING';
                         return {
                           num: s.stepNumber,
                           title: s.goal,
@@ -308,16 +369,16 @@ export const TestWorkspace: React.FC = () => {
                       })
                     : currentTask?.title?.includes('[DEMO]')
                       ? [
-                          { num: 1, title: 'Navigate to target and inspect DOM elements', stepStatus: currentStep >= 1 ? (currentStep > 1 ? 'DONE' : 'ACTIVE') : 'PENDING' },
-                          { num: 2, title: 'Add Product 1 to Shopping Cart', stepStatus: currentStep >= 2 ? (currentStep > 2 ? 'DONE' : 'ACTIVE') : 'PENDING' },
-                          { num: 3, title: 'Add Product 2 to Shopping Cart', stepStatus: currentStep >= 3 ? (currentStep > 3 ? 'DONE' : 'ACTIVE') : 'PENDING' },
-                          { num: 4, title: 'Open Cart Drawer & Assert Mathematical Total Calculation', stepStatus: candidateBugs.length > 0 ? 'BUG_DETECTED' : (currentStep >= 4 ? 'DONE' : 'PENDING') }
+                          { num: 1, title: 'Navigate to target and inspect DOM elements', stepStatus: currentStep >= 1 ? (currentStep > 1 ? 'EXECUTED' : 'ACTIVE') : 'PENDING' },
+                          { num: 2, title: 'Add Product 1 to Shopping Cart', stepStatus: currentStep >= 2 ? (currentStep > 2 ? 'EXECUTED' : 'ACTIVE') : 'PENDING' },
+                          { num: 3, title: 'Add Product 2 to Shopping Cart', stepStatus: currentStep >= 3 ? (currentStep > 3 ? 'EXECUTED' : 'ACTIVE') : 'PENDING' },
+                          { num: 4, title: 'Open Cart Drawer & Assert Mathematical Total Calculation', stepStatus: candidateBugs.length > 0 ? 'BUG_DETECTED' : (currentStep >= 4 ? 'EXECUTED' : 'PENDING') }
                         ]
                       : []
                   ).map((s) => (
                     <div key={s.num} className={`p-2.5 rounded-lg border text-xs flex items-start gap-2.5 transition-all ${
                       s.stepStatus === 'BUG_DETECTED' ? 'bg-rose-950/30 border-rose-500/40 text-rose-200' :
-                      s.stepStatus === 'DONE' ? 'bg-slate-900/60 border-emerald-500/30 text-slate-200' :
+                      s.stepStatus === 'EXECUTED' ? 'bg-slate-900/60 border-slate-700 text-slate-300' :
                       s.stepStatus === 'ACTIVE' ? 'bg-blue-950/40 border-blue-500/50 text-blue-200' :
                       'bg-slate-900/20 border-slate-800 text-slate-500'
                     }`}>
@@ -326,14 +387,14 @@ export const TestWorkspace: React.FC = () => {
                         <div className="font-medium">{s.title}</div>
                         <div className="text-[10px] mt-1 font-semibold flex items-center gap-1">
                           {s.stepStatus === 'BUG_DETECTED' && <span className="text-rose-400 flex items-center gap-0.5"><AlertCircle className="w-3 h-3" /> BUG DETECTED</span>}
-                          {s.stepStatus === 'DONE' && <span className="text-emerald-400 flex items-center gap-0.5"><CheckCircle className="w-3 h-3" /> VERIFIED</span>}
+                          {s.stepStatus === 'EXECUTED' && <span className="text-slate-400 flex items-center gap-0.5"><CheckCircle className="w-3 h-3" /> EXECUTED</span>}
                           {s.stepStatus === 'ACTIVE' && <span className="text-blue-400 animate-pulse">RUNNING...</span>}
                           {s.stepStatus === 'PENDING' && <span className="text-slate-600">PENDING</span>}
                         </div>
                       </div>
                     </div>
                   ))}
-                  {(!activePlan || !activePlan.steps.length) && !currentTask?.title?.includes('[DEMO]') && (
+                  {(!activePlan || !activePlan.steps.length) && !currentTask?.title?.includes('[DEMO]') && !coverageMatrix?.scenarioMappings?.length && (
                     <div className="text-xs text-slate-500 italic p-3 border border-slate-800 rounded-lg">
                       Test plan will be dynamically generated upon launching the test run.
                     </div>
@@ -373,7 +434,45 @@ export const TestWorkspace: React.FC = () => {
 
           {/* Real Playwright Session Viewport */}
           <div className="flex-1 relative flex items-center justify-center p-4 bg-[#070b14] overflow-hidden">
-            {liveScreenshotBase64 ? (
+            {agentStatus === 'BLOCKED_SITE_VERIFICATION' ? (
+              <div className="text-center space-y-4 max-w-xl p-8 glass-panel border border-orange-500/50 bg-orange-950/20 rounded-2xl shadow-2xl">
+                <ShieldAlert className="w-14 h-14 text-orange-400 mx-auto" />
+                <div className="space-y-2">
+                  <h3 className="text-lg font-bold text-orange-200">Human Verification Challenge Detected</h3>
+                  <div className="inline-block px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/40 text-orange-400 text-xs font-mono font-bold">
+                    BLOCKED_SITE_VERIFICATION • Cloudflare Turnstile / Bot Challenge
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Target destination <span className="font-mono text-orange-300 font-semibold">{targetUrl}</span> presented an interactive security verification page.
+                  </p>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Autonomous AI testing has been stopped in accordance with QA ethics and platform policy. Automated challenge clicks, proxy rotation, and bot evasion techniques are strictly forbidden.
+                  </p>
+                </div>
+
+                {liveScreenshotBase64 && (
+                  <div className="my-2 border border-orange-500/30 rounded-lg overflow-hidden max-h-56 shadow-lg">
+                    <img 
+                      src={`data:image/jpeg;base64,${liveScreenshotBase64}`} 
+                      alt="Diagnostic Challenge Screen"
+                      className="w-full h-auto object-contain max-h-52 bg-black"
+                    />
+                    <div className="bg-slate-900/90 py-1 px-2.5 text-[10px] font-mono text-orange-300 text-left border-t border-slate-800">
+                      Diagnostic Screenshot Captured (No Automated Bypass Attempted)
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-3">
+                  <button
+                    onClick={handleOpenTargetExternal}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-500 text-xs font-semibold text-white shadow-lg shadow-orange-600/30 transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Open Website (Manual Solve / Inspection)
+                  </button>
+                </div>
+              </div>
+            ) : liveScreenshotBase64 ? (
               <div className="relative w-full h-full flex items-center justify-center">
                 {/* Live stream badge */}
                 <div className="absolute top-3 left-3 bg-black/70 backdrop-blur-md border border-slate-700 text-xs px-2.5 py-1 rounded-full text-slate-200 flex items-center gap-2 z-10">
@@ -387,7 +486,7 @@ export const TestWorkspace: React.FC = () => {
                   className="max-w-full max-h-full object-contain rounded-lg border border-slate-800 shadow-2xl"
                 />
               </div>
-            ) : agentStatus === 'BLOCKED' ? (
+            ) : agentStatus === 'BLOCKED' || agentStatus === 'BLOCKED_AUTHORIZATION' ? (
               <div className="text-center space-y-4 max-w-lg p-8 glass-panel border border-amber-500/40 bg-amber-950/20 rounded-2xl shadow-2xl">
                 <ShieldAlert className="w-14 h-14 text-amber-400 mx-auto" />
                 <div className="space-y-2">
@@ -475,19 +574,17 @@ export const TestWorkspace: React.FC = () => {
 
           {!collapseRight && (
             <div className="p-4 space-y-4 overflow-y-auto flex-1 text-xs">
-              {/* Active Step Reasoning Box */}
-              <div className="p-3 rounded-lg bg-blue-950/20 border border-blue-500/30 space-y-1.5">
-                <div className="font-semibold text-blue-400 flex items-center gap-1.5">
-                  <span>🧠</span> Active Step Reasoning
+              {/* Active Step Reasoning Box - Only displayed while actively running */}
+              {agentStatus === 'RUNNING' && (
+                <div className="p-3 rounded-lg bg-blue-950/20 border border-blue-500/30 space-y-1.5">
+                  <div className="font-semibold text-blue-400 flex items-center gap-1.5">
+                    <span>🧠</span> Active Step Reasoning
+                  </div>
+                  <p className="text-slate-300 leading-relaxed font-mono text-[11px]">
+                    {activeStepGoal ? `Executing: ${activeStepGoal}` : 'Observing DOM tree and evaluating interactive controls...'}
+                  </p>
                 </div>
-                <p className="text-slate-300 leading-relaxed font-mono text-[11px]">
-                  {activeStepGoal 
-                    ? `Executing: ${activeStepGoal}` 
-                    : agentStatus === 'RUNNING' 
-                      ? 'Observing DOM tree and evaluating interactive controls...' 
-                      : 'Agent idle. Ready for task execution.'}
-                </p>
-              </div>
+              )}
 
               {activeTabLogs === 'logs' && (
                 <div className="space-y-2">
@@ -564,12 +661,22 @@ export const TestWorkspace: React.FC = () => {
                       <div key={ev.id || idx} className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-1.5 font-mono text-[11px]">
                         <div className="flex items-center justify-between text-slate-300 font-bold">
                           <span className="text-emerald-400">#{idx + 1} {ev.type}</span>
-                          <span className="text-slate-500 text-[10px]">{ev.stepId || 'General'}</span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-mono ${
+                            ev.category === 'DIAGNOSTIC' ? 'bg-orange-950/80 text-orange-300 border border-orange-500/40' :
+                            ev.category === 'AUDIT' ? 'bg-purple-950/80 text-purple-300 border border-purple-500/40' :
+                            'bg-blue-950/80 text-blue-300 border border-blue-500/40'
+                          }`}>
+                            {ev.category === 'DIAGNOSTIC' ? 'Diagnostic' :
+                             ev.category === 'AUDIT' ? 'Audit' : 'Functional Evidence'}
+                          </span>
                         </div>
                         <div className="text-slate-400 break-all text-[10px] space-y-0.5">
                           <div><b className="text-slate-300">File:</b> {ev.filePath}</div>
                           <div><b className="text-slate-300">SHA-256:</b> <span className="text-blue-300 font-mono">{ev.sha256Hash}</span></div>
-                          <div className="text-slate-500">{new Date(ev.timestamp).toLocaleTimeString()}</div>
+                          <div className="text-slate-500 flex justify-between pt-0.5">
+                            <span>Step: {ev.stepId || 'General'}</span>
+                            <span>{new Date(ev.timestamp).toLocaleTimeString()}</span>
+                          </div>
                         </div>
                       </div>
                     ))

@@ -4,6 +4,7 @@ import { AgentStudioDatabase } from '../../packages/storage/src/database.js';
 import { AgentOrchestrator } from '../../packages/agent-core/src/orchestrator.js';
 import { checkActionPermission, BLOCKED_DOMAINS_DEFAULT } from '../../packages/policy-engine/src/permission_guard.js';
 import { validateExternalUrl } from '../../apps/desktop/src/main/local_server.js';
+import { server as demoServer } from '../../apps/demo-testing-lab/server.js';
 import type { ActionContext, AuthorizationRecord, TaskRecord } from '../../packages/shared/src/index.js';
 
 test('1. Manual opening of arbitrary valid HTTPS URL', () => {
@@ -56,7 +57,7 @@ test('3. External target without authorization is BLOCKED and default-deny is pr
       targetUrl: 'https://www.nautal.com/en/'
     });
 
-    assert.strictEqual(run.finalStatus, 'BLOCKED');
+    assert.strictEqual(run.finalStatus, 'BLOCKED_AUTHORIZATION');
     const state = orchestrator.getRunState(run.runId);
     assert.ok(state?.logs.some((l: string) => l.includes('AUTHORIZATION_REQUIRED')));
     // Stale screenshots must not exist
@@ -234,7 +235,7 @@ test('7. Screenshot state and run data is cleared after a failed or blocked run'
       targetUrl: 'https://unauthorized-domain.com'
     });
 
-    assert.strictEqual(run.finalStatus, 'BLOCKED');
+    assert.strictEqual(run.finalStatus, 'BLOCKED_AUTHORIZATION');
     // Ensure no stale screenshot remains
     const state = orchestrator.getRunState(run.runId);
     assert.strictEqual(state?.latestScreenshotBase64, undefined);
@@ -246,6 +247,16 @@ test('7. Screenshot state and run data is cleared after a failed or blocked run'
 });
 
 test('8. Demo Lab continues to work with default authorization', async () => {
+  if (!demoServer.listening) {
+    await new Promise<void>((resolve, reject) => {
+      demoServer.once('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') resolve();
+        else reject(err);
+      });
+      demoServer.listen(4173, '127.0.0.1', () => resolve());
+    });
+  }
+
   const db = new AgentStudioDatabase(':memory:');
   const orchestrator = new AgentOrchestrator(db);
 
@@ -261,7 +272,8 @@ test('8. Demo Lab continues to work with default authorization', async () => {
       targetUrl: 'http://127.0.0.1:4173'
     });
 
-    assert.strictEqual(run.finalStatus, 'COMPLETED');
+    // In accordance with Requirements Coverage rules, partial coverage with defects yields PARTIAL or COMPLETED_WITH_FINDINGS
+    assert.ok(run.finalStatus === 'COMPLETED' || run.finalStatus === 'COMPLETED_WITH_FINDINGS' || run.finalStatus === 'PARTIAL');
     const state = orchestrator.getRunState(run.runId);
     assert.strictEqual(state?.currentStep, 4);
     assert.ok(state && state.candidateBugs.length > 0); // mathematical discrepancy defect identified

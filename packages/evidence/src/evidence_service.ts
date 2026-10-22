@@ -10,6 +10,7 @@ export interface CaptureEvidenceOptions {
   stepId?: string;
   filenamePrefix?: string;
   isRedacted?: boolean;
+  category?: EvidenceRecord['category'];
 }
 
 export class EvidenceService {
@@ -52,6 +53,7 @@ export class EvidenceService {
       runId,
       stepId: options.stepId,
       type: options.type,
+      category: options.category || 'FUNCTIONAL_EVIDENCE',
       filePath,
       fileSizeBytes: buffer.length,
       sha256Hash: hash,

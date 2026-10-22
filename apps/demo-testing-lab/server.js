@@ -14,6 +14,8 @@ export const bugConfig = {
   buildMode: 'BUGGY_BUILD', // 'BUGGY_BUILD' | 'FIXED_BUILD'
   bugs: {
     BUG_CART_TOTAL_CALCULATION: true,
+    BUG_CAROUSEL_NEXT_BROKEN: true,
+    BUG_ACCORDION_EMPTY_CONTENT: true,
     BUG_EMAIL_VALIDATION_REGEX: true,
     BUG_REQUIRED_FIELD_BYPASS: true,
     BUG_SORT_PRICE_INVERTED: true,
@@ -43,9 +45,46 @@ const MIME_TYPES = {
   '.svg': 'image/svg+xml'
 };
 
+const CHALLENGE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Just a moment...</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #fafafa; color: #333; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .challenge-container { max-width: 480px; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); text-align: center; }
+    .cf-turnstile { width: 300px; height: 65px; border: 1px solid #ddd; margin: 1.5rem auto; display: flex; align-items: center; justify-content: center; background: #f9f9f9; }
+    .footer { margin-top: 2rem; font-size: 0.8rem; color: #888; }
+  </style>
+</head>
+<body>
+  <div class="challenge-container">
+    <h1>www.nautal.com</h1>
+    <h2>Checking if the site connection is secure</h2>
+    <p>Enable JavaScript and cookies to continue</p>
+    <div id="challenge-form" class="cf-turnstile" data-translate="turnstile">
+      <input type="checkbox" id="cf-turnstile-checkbox" style="margin-right: 0.5rem;" />
+      <label for="cf-turnstile-checkbox">Verify you are human</label>
+    </div>
+    <p style="font-size: 0.85rem; color: #666;">This process is automatic. Your browser will redirect to your requested content shortly.</p>
+    <div class="footer">
+      <div>Ray ID: 8e5a7bc12d8a9f01</div>
+      <div>Performance & security by Cloudflare</div>
+    </div>
+  </div>
+</body>
+</html>`;
+
 export const server = http.createServer((req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
   const pathname = parsedUrl.pathname;
+
+  // Cloudflare / Security challenge simulation route
+  if (pathname === '/challenge' || pathname === '/cloudflare' || pathname === '/security-check') {
+    res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(CHALLENGE_HTML);
+    return;
+  }
 
   // API Endpoints
   if (pathname === '/api/config') {

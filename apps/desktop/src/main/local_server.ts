@@ -2,8 +2,9 @@ import * as http from 'node:http';
 import { URL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { AgentStudioDatabase } from '@test-io-agent/storage';
-import { AgentOrchestrator } from '@test-io-agent/agent-core';
+import { AgentOrchestrator, AiRuntimeManager } from '@test-io-agent/agent-core';
 import { defaultMcpRuntimeService } from '@test-io-agent/windows-mcp-adapter';
+import { SecretStore } from './services/secret_store.js';
 import { SettingsService } from './services/settings_service.js';
 
 export function validateExternalUrl(rawUrl: string): boolean {
@@ -416,7 +417,11 @@ export function createLocalApiServer(
 if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const db = new AgentStudioDatabase('./data/agent_studio.db');
   db.seedDemoTasksIfEmpty();
-  const settingsService = new SettingsService(db);
-  const orchestrator = new AgentOrchestrator(db);
+  const secretStore = new SecretStore();
+  const settingsService = new SettingsService(db, secretStore);
+  const aiRuntimeManager = new AiRuntimeManager(
+    () => settingsService.getActiveProviderConfiguration()
+  );
+  const orchestrator = new AgentOrchestrator(db, undefined, aiRuntimeManager);
   createLocalApiServer(db, orchestrator, settingsService, 3001);
 }

@@ -197,14 +197,17 @@ export class DeterministicQaProvider implements AiProvider {
         evidenceRequirements: ['SCREENSHOT', 'DOM_SNAPSHOT']
       });
     } else {
-      // Generic exploratory testing steps for external websites
+      // Dynamic Homepage Functional Testing steps mapped to in-scope features & requirements
+      const combinedScope = `${(analysis?.inScopeFeatures || []).join(' ')} ${(analysis?.requirements || []).join(' ')}`.toLowerCase();
+
+      // 1. Primary Navigation & Category links
       steps.push({
         stepId: `${planId}_step_${stepNum}`,
         stepNumber: stepNum++,
-        goal: 'Inspect header and primary navigation links',
+        goal: 'Inspect header and primary category navigation links',
         actionType: 'click',
-        targetSelector: 'header nav a, header a, nav a, [role="navigation"] a',
-        targetDescription: 'Primary navigation link',
+        targetSelector: 'header nav a, nav a, .category-link, [role="navigation"] a',
+        targetDescription: 'Primary navigation / category link',
         expectedBehavior: 'Navigation target opens and renders main content view',
         preconditions: ['Page rendered with header navigation'],
         allowedActions: ['click'],
@@ -213,21 +216,75 @@ export class DeterministicQaProvider implements AiProvider {
         evidenceRequirements: ['SCREENSHOT']
       });
 
+      // 2. Primary CTA Button (Explore, Book, Buy, Sign up)
       steps.push({
         stepId: `${planId}_step_${stepNum}`,
         stepNumber: stepNum++,
-        goal: 'Inspect search, filter, or primary input form controls',
+        goal: 'Verify primary CTA action button interaction',
         actionType: 'click',
-        targetSelector: 'input[type="search"], input[type="text"], input, button:has-text("Search")',
-        targetDescription: 'Search input or interactive control',
-        expectedBehavior: 'Input accepts interaction and displays form controls',
-        preconditions: ['Interactive controls available on page'],
-        allowedActions: ['click', 'fill'],
+        targetSelector: '[data-testid="hero-cta"], button.cta, a.cta, .btn-primary, button:has-text("Explore"), button:has-text("Book")',
+        targetDescription: 'Primary Call-To-Action Button',
+        expectedBehavior: 'CTA button triggers expected navigation, modal, or action state',
+        preconditions: ['CTA button visible on homepage'],
+        allowedActions: ['click'],
         verificationMethod: 'DOM_ASSERTION',
         riskCategory: 'LOW',
         evidenceRequirements: ['SCREENSHOT']
       });
 
+      // 3. Image Slider / Carousel interaction if in scope or present
+      if (combinedScope.includes('carousel') || combinedScope.includes('slider') || combinedScope.includes('image') || combinedScope.includes('general')) {
+        steps.push({
+          stepId: `${planId}_step_${stepNum}`,
+          stepNumber: stepNum++,
+          goal: 'Verify carousel image slider navigation and active slide transition',
+          actionType: 'click',
+          targetSelector: '[data-testid="carousel-next"], .carousel-next, button.slide-next, button:has-text("Next")',
+          targetDescription: 'Carousel Next Slide Control',
+          expectedBehavior: 'Carousel advances to next slide and updates active slide index',
+          preconditions: ['Carousel component rendered on homepage'],
+          allowedActions: ['click'],
+          verificationMethod: 'DOM_ASSERTION',
+          riskCategory: 'LOW',
+          evidenceRequirements: ['SCREENSHOT']
+        });
+      }
+
+      // 4. Expandable section / Accordion / FAQ if in scope or present
+      if (combinedScope.includes('expand') || combinedScope.includes('accordion') || combinedScope.includes('faq') || combinedScope.includes('collapse') || combinedScope.includes('general')) {
+        steps.push({
+          stepId: `${planId}_step_${stepNum}`,
+          stepNumber: stepNum++,
+          goal: 'Verify expandable accordion / FAQ section toggle',
+          actionType: 'click',
+          targetSelector: '[data-testid="accordion-toggle"], .accordion-header, summary, details summary',
+          targetDescription: 'Expandable Accordion Section Header',
+          expectedBehavior: 'Accordion expands revealing detailed content and updates aria-expanded state',
+          preconditions: ['Expandable section rendered'],
+          allowedActions: ['click'],
+          verificationMethod: 'DOM_ASSERTION',
+          riskCategory: 'LOW',
+          evidenceRequirements: ['SCREENSHOT']
+        });
+      }
+
+      // 5. Promotional banner or featured product interaction
+      steps.push({
+        stepId: `${planId}_step_${stepNum}`,
+        stepNumber: stepNum++,
+        goal: 'Verify promotional banner / featured product deal link',
+        actionType: 'click',
+        targetSelector: '[data-testid="promo-banner"], .promo a, .deal a, [data-testid="featured-card"]',
+        targetDescription: 'Promotional banner or deal card',
+        expectedBehavior: 'Promotional offer displays details or navigates to dedicated deal view',
+        preconditions: ['Promotional section visible'],
+        allowedActions: ['click'],
+        verificationMethod: 'DOM_ASSERTION',
+        riskCategory: 'LOW',
+        evidenceRequirements: ['SCREENSHOT']
+      });
+
+      // 6. Page scroll and footer verification
       steps.push({
         stepId: `${planId}_step_${stepNum}`,
         stepNumber: stepNum++,
@@ -313,27 +370,89 @@ export class DeterministicQaProvider implements AiProvider {
     expectation: StateExpectation
   ): Promise<VerificationResult> {
     const discrepancies: string[] = [];
+    let expectationEvaluated = false;
 
+    // 1. Numeric Calculation Check
     if (expectation.numericCalculation) {
+      expectationEvaluated = true;
       const expectedTotal = expectation.numericCalculation.expected;
-      // Look for total price pattern in observation snippet
       const match = observation.visibleTextSnippet.match(/Total:\s*\$?([\d\.]+)/i);
       if (match) {
         const parsedTotal = parseFloat(match[1]);
         if (Math.abs(parsedTotal - expectedTotal) > 0.01) {
           discrepancies.push(
-            `Cart total mismatch: Page shows $${parsedTotal}, but expected calculation is $${expectedTotal}`
+            `Cart total mismatch: Page shows $${parsedTotal.toFixed(2)}, but expected calculation is $${expectedTotal.toFixed(2)}`
+          );
+        }
+      } else {
+        discrepancies.push(
+          `Numeric calculation expectation ($${expectedTotal.toFixed(2)}) not found on page.`
+        );
+      }
+    }
+
+    // 2. Expected Text Presence Check
+    if (expectation.expectedText) {
+      expectationEvaluated = true;
+      const hasText = observation.visibleTextSnippet
+        .toLowerCase()
+        .includes(expectation.expectedText.toLowerCase());
+      if (!hasText) {
+        discrepancies.push(
+          `Expected text '${expectation.expectedText}' not found in page observation.`
+        );
+      }
+    }
+
+    // 3. Expected URL Pattern Check
+    if (expectation.expectedUrlPattern) {
+      expectationEvaluated = true;
+      if (!observation.currentUrl.includes(expectation.expectedUrlPattern)) {
+        discrepancies.push(
+          `Page URL '${observation.currentUrl}' does not match expected pattern '${expectation.expectedUrlPattern}'.`
+        );
+      }
+    }
+
+    // 4. Element State Check
+    if (expectation.elementState) {
+      expectationEvaluated = true;
+      const targetSel = expectation.elementState.selector.toLowerCase();
+      const ctrl = observation.controls.find(
+        (c) =>
+          c.selector.toLowerCase() === targetSel ||
+          c.selector.toLowerCase().includes(targetSel)
+      );
+
+      if (expectation.elementState.shouldBeVisible) {
+        if (!ctrl || !ctrl.isVisible) {
+          discrepancies.push(
+            `Expected element '${expectation.elementState.selector}' is not visible.`
           );
         }
       }
     }
 
-    const passed = discrepancies.length === 0;
+    // Rule: Never return PASS simply because discrepancies array is empty without evaluated expectation
+    if (!expectationEvaluated) {
+      return {
+        passed: false,
+        confidence: 0.5,
+        status: 'UNVERIFIED',
+        details:
+          'No testable postcondition expectation was provided. State remains unverified.',
+        discrepancies: []
+      };
+    }
+
+    const passed = discrepancies.length === 0 && observation.consoleErrors.length === 0;
     return {
       passed,
-      confidence: 0.95,
+      confidence: passed ? 0.95 : 0.85,
       status: passed ? 'PASS' : 'FAIL',
-      details: passed ? 'State verified successfully' : 'Discrepancy detected in actual observation',
+      details: passed
+        ? 'State verified successfully against expected postcondition.'
+        : discrepancies.join('; '),
       discrepancies
     };
   }
@@ -426,9 +545,8 @@ Return ONLY valid raw JSON without markdown code fences.`;
       const parsed = JSON.parse(cleaned);
       parsed.taskId = parsed.taskId || `task_ana_${Date.now()}`;
       return parsed;
-    } catch {
-      // Fallback parser if LLM output had text wrapping or API failure
-      return new DeterministicQaProvider().analyzeTask(input);
+    } catch (err: any) {
+      throw new Error(`[${this.name}] AI Inference Error in analyzeTask: ${err.message || String(err)}`);
     }
   }
 
@@ -465,8 +583,8 @@ Return ONLY raw JSON.`;
       parsed.taskId = analysis.taskId;
       parsed.createdAt = new Date().toISOString();
       return parsed;
-    } catch {
-      return new DeterministicQaProvider().generatePlan(analysis);
+    } catch (err: any) {
+      throw new Error(`[${this.name}] AI Inference Error in generatePlan: ${err.message || String(err)}`);
     }
   }
 
@@ -499,8 +617,8 @@ Return ONLY raw JSON.`;
       const cleaned = raw.replace(/^```json/m, '').replace(/^```/m, '').trim();
       const action = JSON.parse(cleaned);
       return action;
-    } catch {
-      return new DeterministicQaProvider().chooseAction(observation, plan, completedSteps);
+    } catch (err: any) {
+      throw new Error(`[${this.name}] AI Inference Error in chooseAction: ${err.message || String(err)}`);
     }
   }
 
@@ -508,7 +626,37 @@ Return ONLY raw JSON.`;
     observation: PageObservation,
     expectation: StateExpectation
   ): Promise<VerificationResult> {
-    return new DeterministicQaProvider().evaluateVerification(observation, expectation);
+    const systemPrompt = `You are an automated QA verification evaluator. Evaluate whether the page observation satisfies the state expectation.
+Return ONLY raw JSON conforming to:
+{
+  "passed": boolean,
+  "confidence": number,
+  "status": "PASS" | "FAIL" | "UNVERIFIED",
+  "details": string,
+  "discrepancies": string[]
+}`;
+    const userPrompt = `Page Observation: ${JSON.stringify({
+      currentUrl: observation.currentUrl,
+      title: observation.title,
+      textSnippet: observation.visibleTextSnippet.slice(0, 1500),
+      controlsCount: observation.controls.length,
+      consoleErrors: observation.consoleErrors
+    })}\nState Expectation: ${JSON.stringify(expectation)}`;
+
+    try {
+      const raw = await this.callChat(systemPrompt, userPrompt);
+      const cleaned = raw.replace(/^```json/m, '').replace(/^```/m, '').trim();
+      const res = JSON.parse(cleaned);
+      return {
+        passed: Boolean(res.passed),
+        confidence: typeof res.confidence === 'number' ? res.confidence : 0.9,
+        status: res.status || (res.passed ? 'PASS' : 'FAIL'),
+        details: res.details || (res.passed ? 'AI verified postcondition' : 'Expectation failed'),
+        discrepancies: Array.isArray(res.discrepancies) ? res.discrepancies : []
+      };
+    } catch (err: any) {
+      throw new Error(`[${this.name}] AI Inference Error in evaluateVerification: ${err.message || String(err)}`);
+    }
   }
 }
 
@@ -574,7 +722,15 @@ export class GeminiProvider implements AiProvider {
     observation: PageObservation,
     expectation: StateExpectation
   ): Promise<VerificationResult> {
-    return new DeterministicQaProvider().evaluateVerification(observation, expectation);
+    const openAiCompat = new OpenAiCompatibleProvider(
+      {
+        apiKey: this.apiKey,
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        model: this.model
+      },
+      this.name
+    );
+    return openAiCompat.evaluateVerification(observation, expectation);
   }
 }
 

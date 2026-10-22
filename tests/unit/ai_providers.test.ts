@@ -110,22 +110,22 @@ test('AI Providers - Deterministic QA Provider evaluates numeric calculations an
   assert.ok(failResult.discrepancies[0]?.includes('Cart total mismatch'));
 });
 
-test('AI Providers - GeminiProvider initializes with gemini-3.5-flash and handles task analysis', async () => {
+test('AI Providers - GeminiProvider initializes with gemini-3.5-flash and surfaces structured error on failure without hidden fallback', async () => {
   const gemini = new GeminiProvider({ apiKey: 'mock-key-for-unit-test' });
   assert.strictEqual(gemini.name, 'Google Gemini Generative AI');
 
-  // Verify graceful fallback when mock key cannot reach external API
-  const analysis = await gemini.analyzeTask({
-    title: 'Test Cart Calculations',
-    description: 'Verify shopping cart total calculation on checkout page'
-  });
-  assert.ok(analysis);
-  assert.ok(analysis.taskType);
-  assert.strictEqual(typeof analysis.confidenceScore, 'number');
-
-  const plan = await gemini.generatePlan(analysis);
-  assert.ok(plan);
-  assert.ok(Array.isArray(plan.steps));
-  assert.ok(plan.steps.length > 0);
+  // Verify that failure throws structured error instead of hidden fallback to DeterministicQaProvider
+  await assert.rejects(
+    async () => {
+      await gemini.analyzeTask({
+        title: 'Test Cart Calculations',
+        description: 'Verify shopping cart total calculation on checkout page'
+      });
+    },
+    (err: any) => {
+      assert.ok(err.message.includes('AI Inference Error') || err.message.includes('AI Provider API request failed'));
+      return true;
+    }
+  );
 });
 
