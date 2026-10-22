@@ -1,0 +1,66 @@
+{
+  "defaultProvider": "gemini",
+  "providers": {
+    "gemini": {
+      "name": "Google Gemini",
+      "defaultModel": "gemini-2.5-flash",
+      "supportedModels": [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-3.8-flash"
+      ],
+      "supportsVision": true,
+      "supportsStructuredOutput": true,
+      "supportsToolCalling": true,
+      "maxOutputTokens": 8192
+    },
+    "anthropic": {
+      "name": "Anthropic Claude",
+      "defaultModel": "claude-3-7-sonnet-20250219",
+      "supportedModels": [
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022"
+      ],
+      "supportsVision": true,
+      "supportsStructuredOutput": true,
+      "supportsToolCalling": true,
+      "maxOutputTokens": 8192
+    },
+    "openai": {
+      "name": "OpenAI GPT",
+      "defaultModel": "gpt-4o",
+      "supportedModels": [
+        "gpt-4o",
+        "gpt-4o-mini"
+      ],
+      "supportsVision": true,
+      "supportsStructuredOutput": true,
+      "supportsToolCalling": true,
+      "maxOutputTokens": 4096
+    },
+    "ollama": {
+      "name": "Ollama Local Models",
+      "defaultModel": "llama3.2-vision:latest",
+      "baseUrl": "http://localhost:11434",
+      "supportedModels": [
+        "llama3.2-vision:latest",
+        "qwen2.5:7b"
+      ],
+      "supportsVision": true,
+      "supportsStructuredOutput": false,
+      "supportsToolCalling": false,
+      "maxOutputTokens": 2048
+    },
+    "deterministic_tester": {
+      "name": "Deterministic QA Reasoner (Built-in)",
+      "defaultModel": "qa-deterministic-v1",
+      "supportedModels": [
+        "qa-deterministic-v1"
+      ],
+      "supportsVision": true,
+      "supportsStructuredOutput": true,
+      "supportsToolCalling": true,
+      "maxOutputTokens": 8192
+    }
+  }
+}

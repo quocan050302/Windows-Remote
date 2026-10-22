@@ -1,0 +1,40 @@
+{
+  "permissionGuard": {
+    "defaultDecision": "DENY",
+    "requireHumanApprovalForHighRisk": true
+  },
+  "domainPolicy": {
+    "blockedDomains": [
+      "tester.test.io",
+      "*.test.io",
+      "epamext.test.io",
+      "paypal.com",
+      "stripe.com",
+      "checkout.stripe.com"
+    ],
+    "defaultAllowedDomains": [
+      "localhost",
+      "127.0.0.1",
+      "0.0.0.0"
+    ]
+  },
+  "blockedActionTypes": [
+    "EXECUTE_SHELL",
+    "MODIFY_REGISTRY",
+    "DELETE_LOCAL_FILES",
+    "SUBMIT_EXTERNAL_BUG_REPORT",
+    "SUBMIT_CREDIT_CARD",
+    "MODIFY_PASSWORD",
+    "DELETE_ACCOUNT"
+  ],
+  "dataClassification": {
+    "defaultLevel": "INTERNAL",
+    "allowExternalTransmission": false,
+    "redactionRules": {
+      "maskCreditCards": true,
+      "maskPasswords": true,
+      "maskAuthTokens": true,
+      "maskEmails": false
+    }
+  }
+}

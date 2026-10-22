@@ -1,0 +1,31 @@
+# Node & Build artifacts
+node_modules/
+dist/
+build/
+out/
+release/
+apps/**/release/
+*.log
+*.exe
+
+# Python venvs & cache
+__pycache__/
+*.pyc
+.venv/
+research/
+
+# Database & Evidence
+data/
+*.db
+*.sqlite
+
+# Environment secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Playwright & test artifacts
+test-results/
+playwright-report/
+blob-report/

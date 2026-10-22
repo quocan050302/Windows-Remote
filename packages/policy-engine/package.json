@@ -1,0 +1,17 @@
+{
+  "name": "@test-io-agent/policy-engine",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@test-io-agent/shared": "workspace:*",
+    "@test-io-agent/storage": "workspace:*"
+  }
+}

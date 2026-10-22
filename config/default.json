@@ -1,0 +1,46 @@
+{
+  "appName": "Test IO Agent Studio",
+  "version": "1.0.0",
+  "defaultExecutionMode": "COPILOT_MODE",
+  "telemetry": {
+    "enabled": false
+  },
+  "browser": {
+    "engine": "chromium",
+    "headless": false,
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "actionTimeoutMs": 10000,
+    "navigationTimeoutMs": 30000
+  },
+  "agent": {
+    "maxSteps": 30,
+    "maxRuntimeSeconds": 300,
+    "tokenBudget": 150000,
+    "retryLimit": 2
+  },
+  "storage": {
+    "dbPath": "./data/agent_studio.db",
+    "evidencePath": "./data/evidence"
+  },
+  "windowsMcp": {
+    "enabled": true,
+    "idleTimeout": 10.0,
+    "policy": "relaxed",
+    "allowedTools": [
+      "Snapshot",
+      "Screenshot",
+      "DisplayInventory",
+      "ControlStatus",
+      "Click",
+      "Type",
+      "Scroll",
+      "Move",
+      "Shortcut",
+      "Wait",
+      "WaitFor"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@test-io-agent/windows-mcp-adapter",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "@test-io-agent/policy-engine": "workspace:*",
+    "@test-io-agent/shared": "workspace:*",
+    "@test-io-agent/storage": "workspace:*"
+  }
+}

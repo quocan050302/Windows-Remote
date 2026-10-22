@@ -1,0 +1,50 @@
+{
+  "name": "@test-io-agent/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && tsc -p tsconfig.main.json",
+    "package:win": "electron-builder --win"
+  },
+  "dependencies": {
+    "@test-io-agent/agent-core": "workspace:*",
+    "@test-io-agent/browser-adapter": "workspace:*",
+    "@test-io-agent/evidence": "workspace:*",
+    "@test-io-agent/policy-engine": "workspace:*",
+    "@test-io-agent/report-engine": "workspace:*",
+    "@test-io-agent/shared": "workspace:*",
+    "@test-io-agent/storage": "workspace:*",
+    "@test-io-agent/test-intelligence": "workspace:*",
+    "@test-io-agent/windows-mcp-adapter": "workspace:*",
+    "lucide-react": "^1.16.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^45.0.0",
+    "electron-builder": "^25.1.8",
+    "vite": "^6.2.0"
+  },
+  "build": {
+    "appId": "com.testio.agentstudio",
+    "productName": "Test IO Agent Studio",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": ["dir"],
+      "signAndEditExecutable": false
+    }
+  }
+}
