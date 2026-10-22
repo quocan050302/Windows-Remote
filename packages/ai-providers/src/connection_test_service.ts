@@ -107,7 +107,7 @@ export class AiConnectionTestService {
 
     // 2. Perform minimal real inference request
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent`;
-    const res = await fetch(endpoint, {
+    let res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'x-goog-api-key': key,
@@ -115,10 +115,29 @@ export class AiConnectionTestService {
       },
       body: JSON.stringify({
         contents: [{ parts: [{ text: 'Respond with exactly the word READY.' }] }],
-        generationConfig: { maxOutputTokens: 10 }
+        generationConfig: {
+          maxOutputTokens: 200,
+          thinkingConfig: { thinkingBudget: 0 }
+        }
       }),
       signal: AbortSignal.timeout(10000)
     });
+
+    // Fallback without thinkingConfig if the model does not support it (e.g. legacy variants)
+    if (!res.ok && res.status === 400) {
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': key,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'Respond with exactly the word READY.' }] }],
+          generationConfig: { maxOutputTokens: 200 }
+        }),
+        signal: AbortSignal.timeout(10000)
+      });
+    }
 
     const latencyMs = Date.now() - startTime;
 
@@ -139,7 +158,8 @@ export class AiConnectionTestService {
     }
 
     const data: any = await res.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const text = parts.map((p: any) => p.text || '').join('').trim();
 
     if (!text) {
       return {
