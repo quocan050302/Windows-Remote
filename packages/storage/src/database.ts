@@ -6,6 +6,10 @@ import type {
   TestPlan,
   TestPlanStep,
   AuthorizationRecord,
+  AuthorizationStatus,
+  AuthorizationAuditEntry,
+  CreateAuthorizationDto,
+  AuthorizationEvaluationResult,
   CandidateBug,
   BugVerification,
   EvidenceRecord,
@@ -242,6 +246,10 @@ export class AgentStudioDatabase {
         start_time TEXT NOT NULL,
         expiration_time TEXT NOT NULL,
         is_revoked INTEGER NOT NULL DEFAULT 0,
+        status TEXT,
+        revocation_reason TEXT,
+        audit_history_json TEXT,
+        updated_at TEXT,
         created_at TEXT NOT NULL
       );
 
@@ -279,6 +287,20 @@ export class AgentStudioDatabase {
         timestamp TEXT NOT NULL
       );
     `);
+
+    // Safe migration: Add optional authorization columns if missing in existing database files
+    try {
+      this.db.exec(`ALTER TABLE authorizations ADD COLUMN status TEXT;`);
+    } catch { /* already exists */ }
+    try {
+      this.db.exec(`ALTER TABLE authorizations ADD COLUMN revocation_reason TEXT;`);
+    } catch { /* already exists */ }
+    try {
+      this.db.exec(`ALTER TABLE authorizations ADD COLUMN audit_history_json TEXT;`);
+    } catch { /* already exists */ }
+    try {
+      this.db.exec(`ALTER TABLE authorizations ADD COLUMN updated_at TEXT;`);
+    } catch { /* already exists */ }
   }
 
   // ==========================================
@@ -465,14 +487,82 @@ export class AgentStudioDatabase {
     };
   }
 
+  private mapAuthorizationRow(r: Record<string, unknown>): AuthorizationRecord {
+    const isRevoked = Boolean(r.is_revoked);
+    const now = new Date();
+    const exp = new Date(r.expiration_time as string);
+    const start = new Date(r.start_time as string);
+    let status: AuthorizationStatus = 'ACTIVE';
+    if (isRevoked) {
+      status = 'REVOKED';
+    } else if (now > exp) {
+      status = 'EXPIRED';
+    } else if (now < start) {
+      status = 'PENDING';
+    }
+
+    let auditHistory: AuthorizationAuditEntry[] = [];
+    if (r.audit_history_json) {
+      try {
+        auditHistory = JSON.parse(r.audit_history_json as string);
+      } catch {
+        auditHistory = [];
+      }
+    }
+
+    return {
+      id: r.id as string,
+      grantingOrgOrPerson: r.granting_party as string,
+      verificationEvidence: r.verification_evidence as string,
+      scope: r.scope as string,
+      allowedDomains: JSON.parse(r.allowed_domains_json as string),
+      allowedActions: JSON.parse(r.allowed_actions_json as string),
+      allowedDeviceTypes: JSON.parse(r.allowed_devices_json as string),
+      startTime: r.start_time as string,
+      expirationTime: r.expiration_time as string,
+      isRevoked,
+      status: (r.status as AuthorizationStatus) || status,
+      revocationReason: (r.revocation_reason as string) || undefined,
+      auditHistory,
+      createdAt: r.created_at as string,
+      updatedAt: (r.updated_at as string) || undefined
+    };
+  }
+
   public saveAuthorization(auth: AuthorizationRecord): void {
+    const now = new Date();
+    const exp = new Date(auth.expirationTime);
+    const start = new Date(auth.startTime);
+    let computedStatus: AuthorizationStatus = 'ACTIVE';
+    if (auth.isRevoked) {
+      computedStatus = 'REVOKED';
+    } else if (now > exp) {
+      computedStatus = 'EXPIRED';
+    } else if (now < start) {
+      computedStatus = 'PENDING';
+    }
+    const finalStatus = auth.status || computedStatus;
+
     const stmt = this.db.prepare(`
       INSERT INTO authorizations (
         id, granting_party, verification_evidence, scope, allowed_domains_json,
-        allowed_actions_json, allowed_devices_json, start_time, expiration_time, is_revoked, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        allowed_actions_json, allowed_devices_json, start_time, expiration_time, is_revoked,
+        status, revocation_reason, audit_history_json, updated_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
-        is_revoked = excluded.is_revoked
+        granting_party = excluded.granting_party,
+        verification_evidence = excluded.verification_evidence,
+        scope = excluded.scope,
+        allowed_domains_json = excluded.allowed_domains_json,
+        allowed_actions_json = excluded.allowed_actions_json,
+        allowed_devices_json = excluded.allowed_devices_json,
+        start_time = excluded.start_time,
+        expiration_time = excluded.expiration_time,
+        is_revoked = excluded.is_revoked,
+        status = excluded.status,
+        revocation_reason = excluded.revocation_reason,
+        audit_history_json = excluded.audit_history_json,
+        updated_at = excluded.updated_at
     `);
     stmt.run(
       auth.id,
@@ -485,6 +575,10 @@ export class AgentStudioDatabase {
       auth.startTime,
       auth.expirationTime,
       auth.isRevoked ? 1 : 0,
+      finalStatus,
+      auth.revocationReason || null,
+      JSON.stringify(auth.auditHistory || []),
+      auth.updatedAt || new Date().toISOString(),
       auth.createdAt
     );
   }
@@ -493,19 +587,95 @@ export class AgentStudioDatabase {
     const stmt = this.db.prepare(`SELECT * FROM authorizations WHERE id = ?`);
     const r = stmt.get(id) as Record<string, unknown> | undefined;
     if (!r) return null;
-    return {
-      id: r.id as string,
-      grantingOrgOrPerson: r.granting_party as string,
-      verificationEvidence: r.verification_evidence as string,
-      scope: r.scope as string,
-      allowedDomains: JSON.parse(r.allowed_domains_json as string),
-      allowedActions: JSON.parse(r.allowed_actions_json as string),
-      allowedDeviceTypes: JSON.parse(r.allowed_devices_json as string),
-      startTime: r.start_time as string,
-      expirationTime: r.expiration_time as string,
-      isRevoked: Boolean(r.is_revoked),
-      createdAt: r.created_at as string
+    return this.mapAuthorizationRow(r);
+  }
+
+  public listAuthorizations(): AuthorizationRecord[] {
+    const stmt = this.db.prepare(`SELECT * FROM authorizations ORDER BY created_at DESC`);
+    const rows = stmt.all() as Array<Record<string, unknown>>;
+    return rows.map((r) => this.mapAuthorizationRow(r));
+  }
+
+  public createVerifiedAuthorization(dto: CreateAuthorizationDto): AuthorizationRecord {
+    const grantor = (dto.grantingOrgOrPerson || dto.grantingParty || '').trim();
+    if (!grantor) {
+      throw new Error('grantingOrgOrPerson is required for verified authorization');
+    }
+    const rawDomains = dto.allowedDomains && dto.allowedDomains.length > 0
+      ? dto.allowedDomains
+      : (dto.domain ? [dto.domain] : []);
+    if (rawDomains.length === 0) {
+      throw new Error('At least one allowedDomain is required');
+    }
+    const sanitizedDomains = rawDomains
+      .map((d) => d.trim().toLowerCase().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/:\d+$/, ''))
+      .filter(Boolean);
+
+    if (sanitizedDomains.length === 0) {
+      throw new Error('No valid domain names provided in allowedDomains');
+    }
+
+    if (sanitizedDomains.includes('*') || sanitizedDomains.includes('all')) {
+      throw new Error('Wildcard domains (*) are strictly prohibited by security policy');
+    }
+
+    // Prohibit authorizing tester.test.io platform for autonomous testing
+    for (const d of sanitizedDomains) {
+      if (d === 'tester.test.io' || d.endsWith('.test.io')) {
+        throw new Error(`Authorizing Test IO platform '${d}' for autonomous testing is strictly prohibited by security policy.`);
+      }
+    }
+
+    const now = new Date().toISOString();
+    const id = `auth_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const auth: AuthorizationRecord = {
+      id,
+      grantingOrgOrPerson: (dto.grantingOrgOrPerson || dto.grantingParty || 'Authorized Grantor').trim(),
+      verificationEvidence: (dto.verificationEvidence || 'Verified manual authorization grant').trim(),
+      scope: (dto.scope || 'EXPLORATORY').trim(),
+      allowedDomains: sanitizedDomains,
+      allowedActions: dto.allowedActions || ['NAVIGATE', 'CLICK', 'FILL', 'SELECT', 'SCROLL', 'CAPTURE', 'FINISH'],
+      allowedDeviceTypes: dto.allowedDeviceTypes || ['Desktop Chrome', 'Windows 11'],
+      startTime: dto.startTime || now,
+      expirationTime: dto.expirationTime || dto.expiresAt || new Date(Date.now() + 30 * 86400000).toISOString(),
+      isRevoked: false,
+      status: 'ACTIVE',
+      auditHistory: [
+        {
+          action: 'CREATED',
+          timestamp: now,
+          actor: 'SECURITY_AUDITOR_USER',
+          details: `Verified authorization grant created for domain(s) [${sanitizedDomains.join(', ')}] granted by '${grantor}'`
+        }
+      ],
+      createdAt: now,
+      updatedAt: now
     };
+
+    this.saveAuthorization(auth);
+    return auth;
+  }
+
+  public revokeAuthorization(id: string, reason?: string): AuthorizationRecord {
+    const existing = this.getAuthorization(id);
+    if (!existing) {
+      throw new Error(`Authorization grant '${id}' not found`);
+    }
+    const now = new Date().toISOString();
+    const revocationReason = reason || 'Revoked by authorized operator';
+    existing.isRevoked = true;
+    existing.status = 'REVOKED';
+    existing.revocationReason = revocationReason;
+    existing.updatedAt = now;
+    existing.auditHistory = existing.auditHistory || [];
+    existing.auditHistory.push({
+      action: 'REVOKED',
+      timestamp: now,
+      actor: 'SECURITY_AUDITOR_USER',
+      details: revocationReason
+    });
+    this.saveAuthorization(existing);
+    return existing;
   }
 
   public saveCandidateBug(bug: CandidateBug): void {
@@ -763,8 +933,11 @@ export class AgentStudioDatabase {
     }));
   }
 
-  public findAuthorizationForDomain(domain: string): AuthorizationRecord | null {
-    const stmt = this.db.prepare(`SELECT * FROM authorizations WHERE is_revoked = 0 ORDER BY created_at DESC`);
+  public findAuthorizationForDomain(domain: string, includeRevoked: boolean = false): AuthorizationRecord | null {
+    const query = includeRevoked
+      ? `SELECT * FROM authorizations ORDER BY (CASE WHEN id = 'auth_demo_lab' THEN 1 ELSE 0 END) ASC, created_at DESC`
+      : `SELECT * FROM authorizations WHERE is_revoked = 0 ORDER BY (CASE WHEN id = 'auth_demo_lab' THEN 1 ELSE 0 END) ASC, created_at DESC`;
+    const stmt = this.db.prepare(query);
     const rows = stmt.all() as Array<Record<string, unknown>>;
     const norm = domain.toLowerCase();
 
@@ -772,25 +945,132 @@ export class AgentStudioDatabase {
       const allowedDomains = JSON.parse(r.allowed_domains_json as string) as string[];
       const match = allowedDomains.some((d) => {
         const ld = d.toLowerCase();
-        return ld === norm || norm.endsWith(`.${ld}`) || ((norm === 'localhost' || norm === '127.0.0.1') && (ld === 'localhost' || ld === '127.0.0.1'));
+        return (
+          ld === norm ||
+          norm.endsWith(`.${ld}`) ||
+          ((norm === 'localhost' || norm === '127.0.0.1') && (ld === 'localhost' || ld === '127.0.0.1'))
+        );
       });
       if (match) {
-        return {
-          id: r.id as string,
-          grantingOrgOrPerson: r.granting_party as string,
-          verificationEvidence: r.verification_evidence as string,
-          scope: r.scope as string,
-          allowedDomains,
-          allowedActions: JSON.parse(r.allowed_actions_json as string),
-          allowedDeviceTypes: JSON.parse(r.allowed_devices_json as string),
-          startTime: r.start_time as string,
-          expirationTime: r.expiration_time as string,
-          isRevoked: Boolean(r.is_revoked),
-          createdAt: r.created_at as string
-        };
+        return this.mapAuthorizationRow(r);
       }
     }
     return null;
+  }
+
+  public evaluateTargetAuthorization(targetUrl: string): AuthorizationEvaluationResult {
+    let hostname = '';
+    try {
+      const parsed = new URL(targetUrl);
+      hostname = parsed.hostname.toLowerCase();
+    } catch {
+      return {
+        targetUrl,
+        targetDomain: '',
+        isAuthorized: false,
+        status: 'UNAUTHORIZED',
+        reason: 'Invalid or unparseable target URL.',
+        canExecuteAutonomousRun: false,
+        canOpenManualBrowser: false
+      };
+    }
+
+    // 1. Block tester.test.io unconditionally from automated browsing
+    if (hostname === 'tester.test.io' || hostname.endsWith('.test.io')) {
+      return {
+        targetUrl,
+        targetDomain: hostname,
+        isAuthorized: false,
+        authorized: false,
+        isTestIo: true,
+        status: 'BLOCKED_PLATFORM',
+        reason: `Autonomous browser automation on Test IO platform '${hostname}' is prohibited by policy. Use manual browser viewing mode.`,
+        canExecuteAutonomousRun: false,
+        canOpenManualBrowser: true
+      };
+    }
+
+    // 2. Resolve authorization record (including revoked ones to report accurate status)
+    let auth = this.findAuthorizationForDomain(hostname, true);
+    if (!auth && (hostname === 'localhost' || hostname === '127.0.0.1')) {
+      this.seedDemoAuthorizationIfMissing();
+      auth = this.findAuthorizationForDomain(hostname, true);
+    }
+
+    if (!auth) {
+      return {
+        targetUrl,
+        targetDomain: hostname,
+        isAuthorized: false,
+        authorized: false,
+        isTestIo: false,
+        status: 'UNAUTHORIZED',
+        reason: `AUTHORIZATION_REQUIRED: No verified authorization record exists for domain '${hostname}'. Autonomous testing requires an explicit authorization grant.`,
+        canExecuteAutonomousRun: false,
+        canOpenManualBrowser: true
+      };
+    }
+
+    if (auth.isRevoked) {
+      return {
+        targetUrl,
+        targetDomain: hostname,
+        isAuthorized: false,
+        authorized: false,
+        isTestIo: false,
+        status: 'REVOKED',
+        authorization: auth,
+        reason: `Authorization grant '${auth.id}' for domain '${hostname}' has been revoked (${auth.revocationReason || 'No reason provided'}).`,
+        canExecuteAutonomousRun: false,
+        canOpenManualBrowser: true
+      };
+    }
+
+    const now = new Date();
+    const expiry = new Date(auth.expirationTime);
+    if (now > expiry) {
+      return {
+        targetUrl,
+        targetDomain: hostname,
+        isAuthorized: false,
+        authorized: false,
+        isTestIo: false,
+        status: 'EXPIRED',
+        authorization: auth,
+        reason: `Authorization grant '${auth.id}' for domain '${hostname}' expired on ${auth.expirationTime}.`,
+        canExecuteAutonomousRun: false,
+        canOpenManualBrowser: true
+      };
+    }
+
+    return {
+      targetUrl,
+      targetDomain: hostname,
+      isAuthorized: true,
+      authorized: true,
+      isTestIo: false,
+      status: 'AUTHORIZED',
+      authorization: auth,
+      reason: `Verified authorization grant '${auth.id}' issued by '${auth.grantingOrgOrPerson}'. Valid until ${auth.expirationTime}.`,
+      canExecuteAutonomousRun: true,
+      canOpenManualBrowser: true
+    };
+  }
+
+  public getAuthorizationStatusForTask(taskId: string): AuthorizationEvaluationResult {
+    const task = this.getTask(taskId);
+    if (!task || !task.targetUrl) {
+      return {
+        targetUrl: '',
+        targetDomain: '',
+        isAuthorized: false,
+        status: 'UNAUTHORIZED',
+        reason: task ? 'Task does not specify a target URL.' : `Task '${taskId}' not found.`,
+        canExecuteAutonomousRun: false,
+        canOpenManualBrowser: false
+      };
+    }
+    return this.evaluateTargetAuthorization(task.targetUrl);
   }
 
   public seedDemoAuthorizationIfMissing(): void {

@@ -102,13 +102,20 @@ test('Security Verification - External URL launcher blocks disallowed domains an
     });
     assert.strictEqual(fileRes.status, 400);
 
-    // Block unauthorized external domains
-    const evilRes = await fetch(`http://127.0.0.1:${serverPort}/api/open-external`, {
+    const jsRes = await fetch(`http://127.0.0.1:${serverPort}/api/open-external`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: 'https://malicious-phishing.com/login' })
+      body: JSON.stringify({ url: 'javascript:alert(1)' })
     });
-    assert.strictEqual(evilRes.status, 403);
+    assert.strictEqual(jsRes.status, 400);
+
+    // Allow valid external HTTPS websites for manual viewing in default browser
+    const validRes = await fetch(`http://127.0.0.1:${serverPort}/api/open-external`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://www.nautal.com/en/' })
+    });
+    assert.strictEqual(validRes.status, 200);
   } finally {
     server.close();
     db.close();
@@ -126,9 +133,9 @@ test('Security Verification - Orchestrator unconditionally blocks tester.test.io
     targetUrl: 'https://tester.test.io/tests/12345/tasks'
   });
 
-  assert.strictEqual(result.finalStatus, 'FAILED');
+  assert.strictEqual(result.finalStatus, 'BLOCKED');
   assert.ok(result.error);
-  assert.ok(result.error.includes('SECURITY POLICY VIOLATION'));
+  assert.ok(result.error.includes('SECURITY POLICY VIOLATION') || result.error.includes('prohibited by policy'));
   assert.strictEqual(result.totalStepsExecuted, 0);
 
   db.close();

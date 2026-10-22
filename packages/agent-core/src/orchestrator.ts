@@ -11,6 +11,8 @@ import type {
   EvidenceRecord,
   ReportDraft,
   AuthorizationRecord,
+  CreateAuthorizationDto,
+  AuthorizationEvaluationResult,
   StateExpectation
 } from '@test-io-agent/shared';
 import type { AgentStudioDatabase } from '@test-io-agent/storage';
@@ -28,7 +30,7 @@ import { AiRuntimeManager } from './ai_runtime_manager.js';
 export interface ActiveRunState {
   runId: string;
   taskId: string;
-  status: 'RUNNING' | 'PAUSED' | 'CANCELLED' | 'COMPLETED' | 'FAILED';
+  status: 'RUNNING' | 'PAUSED' | 'CANCELLED' | 'COMPLETED' | 'FAILED' | 'BLOCKED';
   currentStep: number;
   totalSteps: number;
   activeStepGoal?: string;
@@ -42,6 +44,7 @@ export interface ActiveRunState {
   candidateBugs: CandidateBug[];
   evidence: EvidenceRecord[];
   error?: string;
+  blockerReason?: string;
 }
 
 export class AgentOrchestrator {
@@ -247,6 +250,44 @@ export class AgentOrchestrator {
   }
 
   /**
+   * Authorization Management Operations
+   */
+  public listAuthorizations(): AuthorizationRecord[] {
+    return this.db.listAuthorizations();
+  }
+
+  public getAuthorization(id: string): AuthorizationRecord | null {
+    return this.db.getAuthorization(id);
+  }
+
+  public createVerifiedAuthorization(dto: CreateAuthorizationDto): AuthorizationRecord {
+    return this.db.createVerifiedAuthorization(dto);
+  }
+
+  public revokeAuthorization(id: string, reason?: string): AuthorizationRecord {
+    return this.db.revokeAuthorization(id, reason);
+  }
+
+  public evaluateTargetAuthorization(targetUrl: string): AuthorizationEvaluationResult {
+    return this.db.evaluateTargetAuthorization(targetUrl);
+  }
+
+  public getAuthorizationStatusForTask(taskId: string): AuthorizationEvaluationResult {
+    return this.db.getAuthorizationStatusForTask(taskId);
+  }
+
+  public async startRun(options: {
+    targetUrl?: string;
+    taskId?: string;
+    authorizationId?: string;
+    runId?: string;
+    maxSteps?: number;
+  }): Promise<RunResult> {
+    const runId = options.runId || `run_${Date.now()}`;
+    return this.executeAgentLoop(runId, undefined, options);
+  }
+
+  /**
    * Autonomous Agent Execution Loop
    * Contract: executeAgentLoop(runId, abortSignal): Promise<RunResult>
    */
@@ -337,45 +378,39 @@ export class AgentOrchestrator {
       });
 
       // 2. Strict Authorization Verification
-      const parsedUrl = new URL(targetUrl);
-      const targetDomain = parsedUrl.hostname.toLowerCase();
+      const authEval = this.db.evaluateTargetAuthorization(targetUrl);
+      if (!authEval.isAuthorized || !authEval.authorization) {
+        runState.status = 'BLOCKED';
+        runState.error = authEval.reason;
+        runState.blockerReason = authEval.reason;
+        runState.latestScreenshotBase64 = undefined;
+        runState.logs.push(`[${new Date().toLocaleTimeString()}] BLOCKED: ${authEval.reason}`);
 
-      // BLOCK tester.test.io unconditionally from automated browsing
-      if (targetDomain === 'tester.test.io' || targetDomain.endsWith('.test.io')) {
-        throw new Error(
-          `SECURITY POLICY VIOLATION: Autonomous browser automation on Test IO platform '${targetDomain}' is strictly prohibited. Use manual Test IO assistant mode.`
-        );
+        this.db.updateRun({
+          id: runId,
+          status: 'BLOCKED',
+          totalSteps: 0,
+          passedSteps: 0,
+          failedSteps: 0,
+          bugsFound: 0,
+          endTime: new Date().toISOString()
+        });
+
+        return {
+          runId,
+          taskId,
+          finalStatus: 'BLOCKED',
+          totalStepsExecuted: 0,
+          passedSteps: 0,
+          failedSteps: 0,
+          bugsFound: 0,
+          durationMs: Date.now() - startTime,
+          error: authEval.reason
+        };
       }
 
-      let auth: AuthorizationRecord | null = null;
-      if (options?.authorizationId) {
-        auth = this.db.getAuthorization(options.authorizationId);
-      }
-
-      if (!auth) {
-        auth = this.db.findAuthorizationForDomain(targetDomain);
-      }
-
-      // Check if this is the owned local demo testing lab
-      if (!auth && (targetDomain === 'localhost' || targetDomain === '127.0.0.1')) {
-        this.db.seedDemoAuthorizationIfMissing();
-        auth = this.db.findAuthorizationForDomain(targetDomain);
-      }
-
-      // FOR ANY TARGET: Authorization must be independently verified and stored!
-      if (!auth) {
-        throw new Error(
-          `AUTHORIZATION_REQUIRED: No valid, active AuthorizationRecord exists for domain '${targetDomain}'. Autonomous testing requires an explicit authorization grant.`
-        );
-      }
-
-      if (auth.isRevoked) {
-        throw new Error(`AUTHORIZATION_REVOKED: Authorization grant '${auth.id}' for domain '${targetDomain}' has been revoked.`);
-      }
-
-      if (new Date() > new Date(auth.expirationTime)) {
-        throw new Error(`AUTHORIZATION_EXPIRED: Authorization grant '${auth.id}' for domain '${targetDomain}' expired on ${auth.expirationTime}.`);
-      }
+      const auth = authEval.authorization;
+      const targetDomain = authEval.targetDomain;
 
       const actionContext: ActionContext = {
         sourcePlatform: 'TEST_IO_STUDIO',
@@ -445,10 +480,21 @@ export class AgentOrchestrator {
         // B. Choose Action via configured AI Provider
         const action = await runProvider.chooseAction(observation, testPlan, stepIndex);
 
+        // Extract action-specific destination domain if action provides a target URL
+        let actionDomain = targetDomain;
+        if (action.url) {
+          try {
+            const u = new URL(action.url);
+            actionDomain = u.hostname.toLowerCase();
+          } catch {
+            actionDomain = targetDomain;
+          }
+        }
+
         // C. Check Permission Guard
         const permDecision = checkActionPermission(actionContext, {
           type: action.type,
-          domain: targetDomain,
+          domain: actionDomain,
           target: action.selector || action.url
         });
 
@@ -458,7 +504,7 @@ export class AgentOrchestrator {
             `Blocked action by permission guard: ${permDecision.reason}`,
             permDecision.status,
             'DENIED',
-            { taskId, runId, targetDomain }
+            { taskId, runId, targetDomain: actionDomain }
           );
           runState.logs.push(`[${new Date().toLocaleTimeString()}] BLOCKED: ${permDecision.reason}`);
           failedSteps++;
@@ -477,12 +523,36 @@ export class AgentOrchestrator {
           actionResult.actionSummary,
           'ALLOW',
           actionResult.success ? 'SUCCESS' : 'FAILED',
-          { taskId, runId, targetDomain }
+          { taskId, runId, targetDomain: actionDomain }
         );
         runState.logs.push(`[${new Date().toLocaleTimeString()}] Executed: ${actionResult.actionSummary}`);
 
         // E. Postcondition Verification & Evidence Capture
         const postObservation = await this.browserManager.inspectWebPage(activePage.pageId);
+
+        // Check for out-of-scope redirection
+        let postNavDomain = targetDomain;
+        try {
+          const curUrl = new URL(postObservation.currentUrl || activePage.url || '');
+          postNavDomain = curUrl.hostname.toLowerCase();
+        } catch {}
+
+        const isNavAllowed = auth.allowedDomains.some((d) => {
+          const ld = d.toLowerCase();
+          return (
+            postNavDomain === ld ||
+            postNavDomain.endsWith(`.${ld}`) ||
+            ((postNavDomain === 'localhost' || postNavDomain === '127.0.0.1') && (ld === 'localhost' || ld === '127.0.0.1'))
+          );
+        });
+
+        if (!isNavAllowed) {
+          runState.logs.push(
+            `[${new Date().toLocaleTimeString()}] BLOCKED: Navigation redirected outside authorized domain scope to '${postNavDomain}'. Halting execution.`
+          );
+          failedSteps++;
+          break;
+        }
 
         // Capture screenshot evidence
         const screenshotBuf = await this.browserManager.capturePageScreenshot(activePage.pageId);
@@ -498,13 +568,19 @@ export class AgentOrchestrator {
         runState.evidence.push(evidence);
 
         // Evaluate expectation using AI Provider & Test Intelligence
-        const isCartCalculationStep = 
-          step.verificationMethod === 'NUMERIC_CALCULATION' ||
-          step.goal.toLowerCase().includes('total') || 
-          step.expectedBehavior.toLowerCase().includes('79.98');
+        // Demo cart total calculation verification only applies to Demo Lab cart tasks
+        const isDemoCartLab =
+          (targetDomain === 'localhost' || targetDomain === '127.0.0.1' || task.title.includes('[DEMO]')) &&
+          (step.goal.toLowerCase().includes('cart') ||
+            step.expectedBehavior.toLowerCase().includes('79.98') ||
+            step.expectedBehavior.toLowerCase().includes('total'));
+
+        const expectedNumeric = isDemoCartLab
+          ? 79.98
+          : (step.verificationMethod === 'NUMERIC_CALCULATION' && typeof step.inputValue === 'number' ? step.inputValue : undefined);
 
         const expectation: StateExpectation = {
-          numericCalculation: isCartCalculationStep ? { expected: 79.98 } : undefined,
+          numericCalculation: expectedNumeric !== undefined ? { expected: expectedNumeric } : undefined,
           elementState: step.targetSelector ? { selector: step.targetSelector, shouldBeVisible: true } : undefined
         };
 
@@ -512,7 +588,7 @@ export class AgentOrchestrator {
 
         // Check for bug detection
         let bug: CandidateBug | null = null;
-        if (isCartCalculationStep) {
+        if (expectedNumeric !== undefined) {
           bug = detectCandidateBug(postObservation, expectation, { runId, stepId: step.stepId });
         } else if (!verification.passed) {
           bug = detectCandidateBug(postObservation, expectation, { runId, stepId: step.stepId });
@@ -527,9 +603,12 @@ export class AgentOrchestrator {
           runState.logs.push(`[${new Date().toLocaleTimeString()}] BUG DETECTED: ${bug.title} (Actual: ${bug.actualResult})`);
           await verifyCandidateBug(bug);
           failedSteps++;
-        } else {
+        } else if (actionResult.success && verification.passed) {
           runState.logs.push(`[${new Date().toLocaleTimeString()}] VERIFIED: Step ${step.stepNumber} passed.`);
           passedSteps++;
+        } else {
+          runState.logs.push(`[${new Date().toLocaleTimeString()}] UNVERIFIED: Step ${step.stepNumber} failed expectation: ${verification.details}`);
+          failedSteps++;
         }
       }
 
@@ -577,20 +656,34 @@ export class AgentOrchestrator {
         reportId: report?.id
       };
     } catch (err: any) {
-      runState.status = abortController.signal.aborted ? 'CANCELLED' : 'FAILED';
-      runState.error = err?.message || String(err);
+      const errMsg = err?.message || String(err);
+      const isAuthBlocker = errMsg.includes('AUTHORIZATION_') || errMsg.includes('SECURITY POLICY VIOLATION');
+      runState.status = abortController.signal.aborted ? 'CANCELLED' : (isAuthBlocker ? 'BLOCKED' : 'FAILED');
+      runState.error = errMsg;
+      runState.blockerReason = isAuthBlocker ? errMsg : undefined;
+      runState.latestScreenshotBase64 = undefined;
       runState.logs.push(`[${new Date().toLocaleTimeString()}] Run stopped with status ${runState.status}: ${runState.error}`);
+
+      this.db.updateRun({
+        id: runId,
+        status: runState.status,
+        totalSteps: totalStepsExecuted,
+        passedSteps,
+        failedSteps,
+        bugsFound: candidateBugsFound.length,
+        endTime: new Date().toISOString()
+      });
 
       return {
         runId,
         taskId,
-        finalStatus: abortController.signal.aborted ? 'CANCELLED' : 'FAILED',
+        finalStatus: runState.status,
         totalStepsExecuted,
         passedSteps,
         failedSteps,
         bugsFound: candidateBugsFound.length,
         durationMs: Date.now() - startTime,
-        error: err?.message || String(err)
+        error: errMsg
       };
     } finally {
       this.runtimeManager.releaseRunLock(runId);

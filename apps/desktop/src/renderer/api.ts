@@ -215,6 +215,81 @@ class ApiClient {
   }
 
   // ==========================================
+  // Authorization Operations
+  // ==========================================
+  public async listAuthorizations(): Promise<any[]> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.listAuthorizations) {
+      return (window as any).electronAPI.listAuthorizations();
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/authorizations`);
+    if (!res.ok) throw new Error('Failed to list authorizations');
+    return res.json();
+  }
+
+  public async getAuthorization(id: string): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.getAuthorization) {
+      return (window as any).electronAPI.getAuthorization(id);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/authorizations/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error('Failed to get authorization');
+    return res.json();
+  }
+
+  public async createAuthorization(dto: any): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.createAuthorization) {
+      return (window as any).electronAPI.createAuthorization(dto);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/authorizations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(dto)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to create authorization');
+    }
+    return res.json();
+  }
+
+  public async revokeAuthorization(id: string, reason?: string): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.revokeAuthorization) {
+      return (window as any).electronAPI.revokeAuthorization(id, reason);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/authorizations/${encodeURIComponent(id)}/revoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to revoke authorization');
+    }
+    return res.json();
+  }
+
+  public async evaluateTargetAuthorization(targetUrl: string): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.evaluateTargetAuthorization) {
+      return (window as any).electronAPI.evaluateTargetAuthorization(targetUrl);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/authorizations/evaluate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetUrl })
+    });
+    if (!res.ok) throw new Error('Failed to evaluate authorization');
+    return res.json();
+  }
+
+  public async getAuthorizationStatusForTask(taskId: string): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.getAuthorizationStatusForTask) {
+      return (window as any).electronAPI.getAuthorizationStatusForTask(taskId);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/tasks/${encodeURIComponent(taskId)}/authorization-status`);
+    if (!res.ok) throw new Error('Failed to get task authorization status');
+    return res.json();
+  }
+
+  // ==========================================
   // Settings V2.0 APIs
   // ==========================================
 

@@ -103,7 +103,7 @@ export function checkActionPermission(
       };
     }
 
-    if (context.authorization.isRevoked) {
+    if (context.authorization.isRevoked || context.authorization.status === 'REVOKED') {
       return {
         status: 'DENY',
         reason: 'Authorization record has been revoked.',
@@ -111,14 +111,17 @@ export function checkActionPermission(
       };
     }
 
-    const now = new Date();
-    const expiry = new Date(context.authorization.expirationTime);
-    if (now > expiry) {
-      return {
-        status: 'DENY',
-        reason: 'Authorization record has expired.',
-        violations: ['EXPIRED_AUTHORIZATION']
-      };
+    const expiryTime = context.authorization.expirationTime || context.authorization.expiresAt;
+    if (expiryTime) {
+      const now = new Date();
+      const expiry = new Date(expiryTime);
+      if (now > expiry) {
+        return {
+          status: 'DENY',
+          reason: 'Authorization record has expired.',
+          violations: ['EXPIRED_AUTHORIZATION']
+        };
+      }
     }
 
     // Verify allowed domain

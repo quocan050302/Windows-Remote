@@ -20,22 +20,48 @@ import {
   ChevronUp,
   Sparkles,
   Zap,
-  Server
+  Server,
+  Globe,
+  Plus,
+  Ban,
+  History,
+  Calendar,
+  ShieldCheck,
+  ShieldAlert
 } from 'lucide-react';
 import type {
   AiProviderId,
   ProviderPublicStatus,
   ProviderConnectionStatus,
   PublicSettingsResponse,
-  ActiveAiRuntime
+  ActiveAiRuntime,
+  AuthorizationRecord,
+  CreateAuthorizationDto
 } from '@test-io-agent/shared';
 
 export const Settings: React.FC = () => {
-  const { executionMode, setExecutionMode } = useStudioStore();
+  const { 
+    executionMode, 
+    setExecutionMode,
+    authorizations,
+    fetchAuthorizations,
+    createAuthorization,
+    revokeAuthorization
+  } = useStudioStore();
 
   const [loading, setLoading] = useState<boolean>(true);
   const [settingsData, setSettingsData] = useState<PublicSettingsResponse | null>(null);
   const [activeRuntime, setActiveRuntime] = useState<ActiveAiRuntime | null>(null);
+
+  // Authorized Websites Manager state
+  const [showNewAuthForm, setShowNewAuthForm] = useState(false);
+  const [newDomain, setNewDomain] = useState('');
+  const [newGrantingParty, setNewGrantingParty] = useState('');
+  const [newScope, setNewScope] = useState('Autonomous Exploratory QA & Regression Testing');
+  const [newExpiresDays, setNewExpiresDays] = useState('30');
+  const [newAllowedActions, setNewAllowedActions] = useState<string[]>(['click', 'fill', 'navigate', 'scroll']);
+  const [expandedAuditId, setExpandedAuditId] = useState<string | null>(null);
+  const [authActionLoading, setAuthActionLoading] = useState(false);
 
   // Per-provider draft states
   const [draftKeys, setDraftKeys] = useState<Record<string, string>>({
@@ -77,7 +103,69 @@ export const Settings: React.FC = () => {
 
   useEffect(() => {
     fetchSettings();
+    fetchAuthorizations();
   }, []);
+
+  const handleCreateAuthorization = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDomain.trim() || !newGrantingParty.trim()) {
+      setActionMessage({ text: 'Domain and Granting Party are required.', type: 'error' });
+      return;
+    }
+    setAuthActionLoading(true);
+    try {
+      const expiresInDays = parseInt(newExpiresDays, 10);
+      const expiresAt = expiresInDays > 0 
+        ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString() 
+        : undefined;
+
+      const dto: CreateAuthorizationDto = {
+        domain: newDomain.trim(),
+        grantingParty: newGrantingParty.trim(),
+        scope: newScope.trim(),
+        allowedActions: newAllowedActions,
+        expiresAt
+      };
+
+      const res = await createAuthorization(dto);
+      if (res) {
+        setActionMessage({ text: `Authorization for ${newDomain} successfully recorded!`, type: 'success' });
+        setNewDomain('');
+        setNewGrantingParty('');
+        setShowNewAuthForm(false);
+      } else {
+        setActionMessage({ text: 'Failed to record authorization.', type: 'error' });
+      }
+    } catch (err: any) {
+      setActionMessage({ text: `Error creating authorization: ${err.message}`, type: 'error' });
+    } finally {
+      setAuthActionLoading(false);
+    }
+  };
+
+  const handleRevokeAuthorization = async (id: string, domain: string) => {
+    const reason = window.prompt(`Revocation reason for ${domain}:`, 'Testing completed / revoked by user');
+    if (reason === null) return;
+    setAuthActionLoading(true);
+    try {
+      const ok = await revokeAuthorization(id, reason || 'Revoked by user');
+      if (ok) {
+        setActionMessage({ text: `Authorization for ${domain} revoked.`, type: 'info' });
+      } else {
+        setActionMessage({ text: `Failed to revoke authorization for ${domain}.`, type: 'error' });
+      }
+    } catch (err: any) {
+      setActionMessage({ text: `Revocation error: ${err.message}`, type: 'error' });
+    } finally {
+      setAuthActionLoading(false);
+    }
+  };
+
+  const toggleAllowedAction = (action: string) => {
+    setNewAllowedActions(prev =>
+      prev.includes(action) ? prev.filter(a => a !== action) : [...prev, action]
+    );
+  };
 
   const handleTestConnection = async (providerId: AiProviderId) => {
     const draftKey = draftKeys[providerId];
@@ -864,6 +952,244 @@ export const Settings: React.FC = () => {
               </button>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Authorized Websites & Domain Scope Manager */}
+      <div className="glass-panel p-6 space-y-5 rounded-xl border border-slate-800">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+              <Globe className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                Authorized Websites & Domain Scope Manager
+              </h2>
+              <p className="text-xs text-slate-400">
+                Default-deny policy: Autonomous Playwright execution strictly requires verified domain authorization records.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowNewAuthForm(!showNewAuthForm)}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition-all shadow-lg shadow-emerald-600/20 self-start sm:self-auto"
+          >
+            <Plus className="w-3.5 h-3.5" /> {showNewAuthForm ? 'Close Form' : 'Authorize Website'}
+          </button>
+        </div>
+
+        {/* New Authorization Form */}
+        {showNewAuthForm && (
+          <form onSubmit={handleCreateAuthorization} className="p-5 rounded-xl bg-slate-900/60 border border-emerald-500/30 space-y-4 animate-in fade-in duration-200">
+            <div className="font-semibold text-sm text-emerald-400 flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4" /> Record New Verified Testing Authorization
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-300">Target Domain</label>
+                <input
+                  type="text"
+                  value={newDomain}
+                  onChange={(e) => setNewDomain(e.target.value)}
+                  placeholder="e.g. www.nautal.com or test-target.com"
+                  required
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-300">Verified Granting Party</label>
+                <input
+                  type="text"
+                  value={newGrantingParty}
+                  onChange={(e) => setNewGrantingParty(e.target.value)}
+                  placeholder="e.g. Nautal QA Team / Test IO Customer"
+                  required
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-300">Scope Description</label>
+              <input
+                type="text"
+                value={newScope}
+                onChange={(e) => setNewScope(e.target.value)}
+                placeholder="e.g. Autonomous Exploratory QA & Regression Testing"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-300">Expiration</label>
+                <select
+                  value={newExpiresDays}
+                  onChange={(e) => setNewExpiresDays(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                >
+                  <option value="1">1 Day</option>
+                  <option value="7">7 Days</option>
+                  <option value="30">30 Days</option>
+                  <option value="90">90 Days</option>
+                  <option value="0">Indefinite (Development only)</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-300">Permitted Browser Actions</label>
+                <div className="flex flex-wrap gap-3 pt-1">
+                  {['click', 'fill', 'navigate', 'scroll'].map(action => (
+                    <label key={action} className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newAllowedActions.includes(action)}
+                        onChange={() => toggleAllowedAction(action)}
+                        className="rounded bg-slate-950 border-slate-700 text-emerald-500"
+                      />
+                      <span className="capitalize">{action}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setShowNewAuthForm(false)}
+                className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={authActionLoading}
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white shadow-lg shadow-emerald-600/20 disabled:opacity-50"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" /> {authActionLoading ? 'Saving...' : 'Grant & Record Authorization'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* List of Authorizations */}
+        <div className="space-y-3">
+          {authorizations.length === 0 ? (
+            <div className="text-center p-6 border border-slate-800/80 rounded-xl text-slate-500 text-xs italic">
+              No authorizations recorded yet. The system enforces strict default-deny.
+            </div>
+          ) : (
+            authorizations.map((auth) => {
+              const isExpandedAudit = expandedAuditId === auth.id;
+              const isRevoked = auth.status === 'REVOKED';
+              const isExpired = auth.status === 'EXPIRED';
+
+              return (
+                <div key={auth.id} className={`rounded-xl border transition-all ${
+                  isRevoked ? 'bg-rose-950/10 border-rose-900/30 text-slate-400' :
+                  isExpired ? 'bg-amber-950/10 border-amber-900/30 text-slate-400' :
+                  'bg-slate-900/40 border-slate-800 hover:border-slate-700 text-slate-200'
+                }`}>
+                  <div className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <span className="font-mono font-bold text-white text-sm">
+                          {auth.allowedDomains.join(', ')}
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                          isRevoked ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' :
+                          isExpired ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                          'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        }`}>
+                          {auth.status || 'ACTIVE'}
+                        </span>
+                        {auth.id.startsWith('auth_default_') && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                            Demo Lab Default
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-3 gap-y-1 pt-1">
+                        <span><b>Grantor:</b> {auth.grantingParty}</span>
+                        <span>•</span>
+                        <span><b>Scope:</b> {auth.scope}</span>
+                        <span>•</span>
+                        <span>
+                          <b>Expires:</b> {auth.expiresAt ? new Date(auth.expiresAt).toLocaleDateString() : 'Permanent / Local'}
+                        </span>
+                        {auth.revocationReason && (
+                          <span className="text-rose-400">
+                            • <b>Revoked:</b> {auth.revocationReason}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {auth.allowedActions?.map(action => (
+                          <span key={action} className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                            {action}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 self-end md:self-center">
+                      {auth.auditHistory && auth.auditHistory.length > 0 && (
+                        <button
+                          onClick={() => setExpandedAuditId(isExpandedAudit ? null : auth.id)}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300 border border-slate-700"
+                        >
+                          <History className="w-3 h-3 text-blue-400" />
+                          <span>Audit ({auth.auditHistory.length})</span>
+                          {isExpandedAudit ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                        </button>
+                      )}
+
+                      {!isRevoked && !auth.id.startsWith('auth_default_') && (
+                        <button
+                          onClick={() => handleRevokeAuthorization(auth.id, auth.allowedDomains[0])}
+                          disabled={authActionLoading}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded bg-rose-950/40 hover:bg-rose-900/50 text-[11px] font-semibold text-rose-300 border border-rose-800/50 transition-all"
+                        >
+                          <Ban className="w-3 h-3" /> Revoke
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Audit History Timeline */}
+                  {isExpandedAudit && auth.auditHistory && (
+                    <div className="px-4 pb-4 pt-2 border-t border-slate-800/80 bg-black/20 text-xs space-y-2">
+                      <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                        <History className="w-3.5 h-3.5 text-blue-400" /> Authorization Audit Log
+                      </div>
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                        {auth.auditHistory.map((entry, idx) => (
+                          <div key={idx} className="p-2 rounded bg-slate-900/80 border border-slate-800 font-mono text-[11px] flex items-start justify-between gap-2">
+                            <div>
+                              <span className={`font-bold ${entry.action === 'GRANTED' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                [{entry.action}]
+                              </span>{' '}
+                              <span className="text-slate-200">{entry.details}</span>
+                              <div className="text-slate-500 text-[10px]">Actor: {entry.actor}</div>
+                            </div>
+                            <span className="text-slate-500 text-[10px] flex-shrink-0">
+                              {new Date(entry.timestamp).toLocaleString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 

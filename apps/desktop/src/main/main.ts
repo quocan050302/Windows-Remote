@@ -172,19 +172,28 @@ function createWindow() {
     return orchestrator.getActiveAiRuntimeStatus();
   });
 
-  // Safe external URL launching
+  // Safe external URL launching (Manual user viewing in OS browser)
   ipcMain.handle('shell:openExternal', async (_, url: string) => {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error('Forbidden URL scheme');
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error('Invalid URL format');
     }
-    const host = parsed.hostname.toLowerCase();
-    if (host !== 'tester.test.io' && !host.endsWith('.test.io') && host !== 'localhost' && host !== '127.0.0.1') {
-      throw new Error(`Opening destination '${host}' is not permitted.`);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error('Forbidden URL scheme. Only HTTP and HTTPS are permitted.');
     }
     await shell.openExternal(url);
     return { success: true };
   });
+
+  // Authorization Operations
+  ipcMain.handle('authorizations:list', async () => orchestrator.listAuthorizations());
+  ipcMain.handle('authorizations:get', async (_, id: string) => orchestrator.getAuthorization(id));
+  ipcMain.handle('authorizations:create', async (_, dto: any) => orchestrator.createVerifiedAuthorization(dto));
+  ipcMain.handle('authorizations:revoke', async (_, { id, reason }: { id: string; reason?: string }) => orchestrator.revokeAuthorization(id, reason));
+  ipcMain.handle('authorizations:evaluate', async (_, targetUrl: string) => orchestrator.evaluateTargetAuthorization(targetUrl));
+  ipcMain.handle('authorizations:getForTask', async (_, taskId: string) => orchestrator.getAuthorizationStatusForTask(taskId));
 }
 
 app.whenReady().then(createWindow);

@@ -324,7 +324,7 @@ export const TestInbox: React.FC = () => {
                   className="mt-0.5 rounded text-blue-500 focus:ring-0"
                 />
                 <label htmlFor="permCheck" className="text-slate-300 cursor-pointer leading-tight">
-                  <b className="text-white">Authorization Verification:</b> I confirm that I am authorized to test this target application and that this action complies with Test IO customer guidelines.
+                  <b className="text-white">Compliance Acknowledgment:</b> I confirm that I am authorized by the customer to test this application. <span className="text-slate-400 text-[11px] block mt-0.5">Note: Autonomous AI execution requires a verified domain authorization record in Workspace or Settings (default-deny policy).</span>
                 </label>
               </div>
 

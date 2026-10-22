@@ -34,5 +34,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getActiveAiStatus: () =>
     ipcRenderer.invoke('settings:getActiveAiStatus'),
 
-  openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url)
+  openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
+  
+  // Authorization Manager APIs
+  listAuthorizations: () => ipcRenderer.invoke('authorizations:list'),
+  getAuthorization: (id: string) => ipcRenderer.invoke('authorizations:get', id),
+  createAuthorization: (dto: any) => ipcRenderer.invoke('authorizations:create', dto),
+  revokeAuthorization: (id: string, reason?: string) => ipcRenderer.invoke('authorizations:revoke', { id, reason }),
+  evaluateTargetAuthorization: (targetUrl: string) => ipcRenderer.invoke('authorizations:evaluate', targetUrl),
+  getAuthorizationStatusForTask: (taskId: string) => ipcRenderer.invoke('authorizations:getForTask', taskId)
 });

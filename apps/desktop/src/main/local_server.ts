@@ -6,6 +6,16 @@ import { AgentOrchestrator } from '@test-io-agent/agent-core';
 import { defaultMcpRuntimeService } from '@test-io-agent/windows-mcp-adapter';
 import { SettingsService } from './services/settings_service.js';
 
+export function validateExternalUrl(rawUrl: string): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false;
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 export function createLocalApiServer(
   db: AgentStudioDatabase,
   orchestrator: AgentOrchestrator,
@@ -291,26 +301,26 @@ export function createLocalApiServer(
         return;
       }
 
-      // External Browser Launch (Test IO Safe Opener - No Shell String Interpolation)
+      // External Browser Launch (Manual User Viewing - Safe Opener)
       if (req.method === 'POST' && pathname === '/api/open-external') {
         const body = await readBody();
         const urlToOpen = String(body.url || '');
 
         // URL Validation
-        const parsed = new URL(urlToOpen);
+        let parsed: URL;
+        try {
+          parsed = new URL(urlToOpen);
+        } catch {
+          sendJson(400, { error: 'Invalid URL format.' });
+          return;
+        }
+
         if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-          sendJson(400, { error: 'Invalid URL protocol.' });
+          sendJson(400, { error: 'Invalid or forbidden URL protocol scheme. Only HTTP and HTTPS are permitted.' });
           return;
         }
 
-        // Destination domain restriction
-        const host = parsed.hostname.toLowerCase();
-        if (host !== 'tester.test.io' && !host.endsWith('.test.io') && host !== 'localhost' && host !== '127.0.0.1') {
-          sendJson(403, { error: 'Opening this external destination is not permitted.' });
-          return;
-        }
-
-        // Safe URL launch via spawn array (no shell interpolation)
+        // Safe URL launch via spawn array (no shell string interpolation)
         try {
           if (process.platform === 'win32') {
             spawn('cmd.exe', ['/c', 'start', '', urlToOpen], { detached: true, stdio: 'ignore' });
@@ -322,6 +332,69 @@ export function createLocalApiServer(
           sendJson(200, { success: true, url: urlToOpen });
         } catch (err: any) {
           sendJson(500, { error: err.message || 'Failed to open URL' });
+        }
+        return;
+      }
+
+      // Authorizations: List
+      if (req.method === 'GET' && pathname === '/api/authorizations') {
+        const list = orchestrator.listAuthorizations();
+        sendJson(200, list);
+        return;
+      }
+
+      // Authorizations: Evaluate Target URL
+      if (req.method === 'POST' && pathname === '/api/authorizations/evaluate') {
+        const body = await readBody();
+        const result = orchestrator.evaluateTargetAuthorization(String(body.targetUrl || ''));
+        sendJson(200, result);
+        return;
+      }
+
+      // Authorizations: Get for Task
+      if (req.method === 'GET' && pathname.startsWith('/api/tasks/') && pathname.endsWith('/authorization-status')) {
+        const parts = pathname.split('/');
+        const taskId = parts[3];
+        const result = orchestrator.getAuthorizationStatusForTask(taskId);
+        sendJson(200, result);
+        return;
+      }
+
+      // Authorizations: Revoke
+      if (req.method === 'POST' && pathname.startsWith('/api/authorizations/') && pathname.endsWith('/revoke')) {
+        const parts = pathname.split('/');
+        const id = parts[3];
+        const body = await readBody();
+        try {
+          const revoked = orchestrator.revokeAuthorization(id, body.reason);
+          sendJson(200, revoked);
+        } catch (err: any) {
+          sendJson(400, { error: err.message || 'Failed to revoke authorization' });
+        }
+        return;
+      }
+
+      // Authorizations: Get Single
+      if (req.method === 'GET' && pathname.startsWith('/api/authorizations/')) {
+        const parts = pathname.split('/');
+        const id = parts[3];
+        const auth = orchestrator.getAuthorization(id);
+        if (!auth) {
+          sendJson(404, { error: `Authorization '${id}' not found` });
+          return;
+        }
+        sendJson(200, auth);
+        return;
+      }
+
+      // Authorizations: Create
+      if (req.method === 'POST' && pathname === '/api/authorizations') {
+        const body = await readBody();
+        try {
+          const created = orchestrator.createVerifiedAuthorization(body);
+          sendJson(201, created);
+        } catch (err: any) {
+          sendJson(400, { error: err.message || 'Failed to create authorization' });
         }
         return;
       }

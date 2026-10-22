@@ -141,7 +141,15 @@ export class DeterministicQaProvider implements AiProvider {
 
     // Plan steps tailored to task domain
     const inScope = analysis?.inScopeFeatures || [];
-    const isCartTask = inScope.some((f) => f.toLowerCase().includes('cart')) || !analysis || analysis.taskType === 'EXPLORATORY';
+    const targetApp = (analysis?.targetApplication || '').toLowerCase();
+    const reqText = (analysis?.requirements || []).join(' ').toLowerCase();
+
+    // Only configure cart-specific shopping flow if the task explicitly concerns cart or demo lab
+    const isCartTask =
+      inScope.some((f) => f.toLowerCase().includes('cart') || f.toLowerCase().includes('giỏ hàng')) ||
+      reqText.includes('cart') ||
+      reqText.includes('giỏ hàng') ||
+      (targetApp.includes('demo') && targetApp.includes('lab'));
 
     if (isCartTask) {
       steps.push({
@@ -189,16 +197,46 @@ export class DeterministicQaProvider implements AiProvider {
         evidenceRequirements: ['SCREENSHOT', 'DOM_SNAPSHOT']
       });
     } else {
+      // Generic exploratory testing steps for external websites
       steps.push({
         stepId: `${planId}_step_${stepNum}`,
         stepNumber: stepNum++,
-        goal: 'Inspect interactive navigation tabs and buttons',
+        goal: 'Inspect header and primary navigation links',
         actionType: 'click',
-        targetSelector: 'nav a, header button',
-        targetDescription: 'First navigation link',
-        expectedBehavior: 'Navigation triggers active view update',
-        preconditions: ['Page rendered'],
+        targetSelector: 'header nav a, header a, nav a, [role="navigation"] a',
+        targetDescription: 'Primary navigation link',
+        expectedBehavior: 'Navigation target opens and renders main content view',
+        preconditions: ['Page rendered with header navigation'],
         allowedActions: ['click'],
+        verificationMethod: 'DOM_ASSERTION',
+        riskCategory: 'LOW',
+        evidenceRequirements: ['SCREENSHOT']
+      });
+
+      steps.push({
+        stepId: `${planId}_step_${stepNum}`,
+        stepNumber: stepNum++,
+        goal: 'Inspect search, filter, or primary input form controls',
+        actionType: 'click',
+        targetSelector: 'input[type="search"], input[type="text"], input, button:has-text("Search")',
+        targetDescription: 'Search input or interactive control',
+        expectedBehavior: 'Input accepts interaction and displays form controls',
+        preconditions: ['Interactive controls available on page'],
+        allowedActions: ['click', 'fill'],
+        verificationMethod: 'DOM_ASSERTION',
+        riskCategory: 'LOW',
+        evidenceRequirements: ['SCREENSHOT']
+      });
+
+      steps.push({
+        stepId: `${planId}_step_${stepNum}`,
+        stepNumber: stepNum++,
+        goal: 'Verify page layout integrity and footer compliance links',
+        actionType: 'scroll',
+        targetDescription: 'Page footer and content layout',
+        expectedBehavior: 'Page scrolls smoothly and renders footer and compliance information',
+        preconditions: ['Page loaded'],
+        allowedActions: ['scroll', 'capture'],
         verificationMethod: 'DOM_ASSERTION',
         riskCategory: 'LOW',
         evidenceRequirements: ['SCREENSHOT']
@@ -241,23 +279,23 @@ export class DeterministicQaProvider implements AiProvider {
     }
 
     if (currentStep.actionType === 'click') {
-      // Find matching control in observation
       let selector = currentStep.targetSelector || '';
-      const matched = observation.controls.find(
-        (c) =>
-          c.selector.includes('add-to-cart') ||
-          c.selector.includes('cart') ||
-          (c.text && c.text.toLowerCase().includes('cart')) ||
-          (c.name && c.name.toLowerCase().includes('cart'))
-      );
-
-      if (matched && !selector) {
-        selector = matched.selector;
+      if (!selector && observation.controls && observation.controls.length > 0) {
+        selector = observation.controls[0].selector;
       }
 
       return {
         type: 'click',
-        selector: selector || currentStep.targetSelector,
+        selector: selector || 'button, a',
+        reason: currentStep.goal,
+        expectedObservation: currentStep.expectedBehavior
+      };
+    }
+
+    if (currentStep.actionType === 'scroll') {
+      return {
+        type: 'scroll',
+        scrollAmount: { x: 0, y: 500 },
         reason: currentStep.goal,
         expectedObservation: currentStep.expectedBehavior
       };

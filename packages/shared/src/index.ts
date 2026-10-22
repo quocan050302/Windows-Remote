@@ -136,6 +136,15 @@ export interface PermissionDecision {
   requiredGrant?: string;
 }
 
+export type AuthorizationStatus = 'ACTIVE' | 'EXPIRED' | 'REVOKED' | 'PENDING';
+
+export interface AuthorizationAuditEntry {
+  action: string;
+  timestamp: string;
+  actor: string;
+  details?: string;
+}
+
 export interface AuthorizationRecord {
   id: string;
   grantingOrgOrPerson: string;
@@ -146,8 +155,41 @@ export interface AuthorizationRecord {
   allowedDeviceTypes: string[];
   startTime: string;
   expirationTime: string;
+  expiresAt?: string;
+  grantingParty?: string;
   isRevoked: boolean;
+  status?: AuthorizationStatus;
+  revocationReason?: string;
+  auditHistory?: AuthorizationAuditEntry[];
   createdAt: string;
+  updatedAt?: string;
+}
+
+export interface CreateAuthorizationDto {
+  grantingOrgOrPerson?: string;
+  verificationEvidence?: string;
+  scope: string;
+  allowedDomains?: string[];
+  allowedActions?: string[];
+  allowedDeviceTypes?: string[];
+  startTime?: string;
+  expirationTime?: string;
+  domain?: string;
+  grantingParty?: string;
+  expiresAt?: string;
+}
+
+export interface AuthorizationEvaluationResult {
+  targetUrl: string;
+  targetDomain: string;
+  isAuthorized: boolean;
+  authorized?: boolean;
+  isTestIo?: boolean;
+  status: 'AUTHORIZED' | 'UNAUTHORIZED' | 'EXPIRED' | 'REVOKED' | 'BLOCKED_PLATFORM';
+  authorization?: AuthorizationRecord;
+  reason: string;
+  canExecuteAutonomousRun: boolean;
+  canOpenManualBrowser: boolean;
 }
 
 export interface ActionContext {

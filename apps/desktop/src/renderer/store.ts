@@ -1,5 +1,17 @@
 import { create } from 'zustand';
-import type { ExecutionMode, TaskStatus, CandidateBug, ReportDraft, TaskRecord, TestPlan, EvidenceRecord, ActiveAiRuntime } from '@test-io-agent/shared';
+import type { 
+  ExecutionMode, 
+  TaskStatus, 
+  CandidateBug, 
+  ReportDraft, 
+  TaskRecord, 
+  TestPlan, 
+  EvidenceRecord, 
+  ActiveAiRuntime,
+  AuthorizationRecord,
+  AuthorizationEvaluationResult,
+  CreateAuthorizationDto
+} from '@test-io-agent/shared';
 import { apiClient, type RuntimeInfo } from './api';
 
 export interface StudioState {
@@ -19,6 +31,8 @@ export interface StudioState {
   evidence: EvidenceRecord[];
   recentReports: ReportDraft[];
   tasks: TaskRecord[];
+  authorizations: AuthorizationRecord[];
+  targetAuthorization: AuthorizationEvaluationResult | null;
   metrics: {
     taskCount: number;
     activeRuns: number;
@@ -42,6 +56,10 @@ export interface StudioState {
   checkRuntime: () => Promise<void>;
   fetchActiveAiStatus: () => Promise<void>;
   fetchTasks: () => Promise<void>;
+  fetchAuthorizations: () => Promise<void>;
+  createAuthorization: (dto: CreateAuthorizationDto) => Promise<AuthorizationRecord | null>;
+  revokeAuthorization: (id: string, reason?: string) => Promise<boolean>;
+  evaluateTargetAuthorization: (url?: string) => Promise<AuthorizationEvaluationResult | null>;
   fetchPlan: (taskId: string) => Promise<void>;
   importTask: (taskData: any) => Promise<any>;
   startRun: (taskId?: string, targetUrl?: string) => Promise<void>;
@@ -72,6 +90,8 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   evidence: [],
   recentReports: [],
   tasks: [],
+  authorizations: [],
+  targetAuthorization: null,
   metrics: {
     taskCount: 0,
     activeRuns: 0,
@@ -89,7 +109,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   setTab: (tab) => set({ currentTab: tab }),
   setExecutionMode: (mode) => set({ executionMode: mode }),
-  setTargetUrl: (url) => set({ targetUrl: url }),
+  setTargetUrl: (url) => {
+    set({ targetUrl: url });
+    get().evaluateTargetAuthorization(url);
+  },
 
   checkRuntime: async () => {
     const info = await apiClient.detectRuntime();
@@ -116,6 +139,51 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     }
   },
 
+  fetchAuthorizations: async () => {
+    try {
+      const auths = await apiClient.listAuthorizations();
+      set({ authorizations: auths || [] });
+    } catch (err) {
+      console.warn('Could not fetch authorizations:', err);
+    }
+  },
+
+  createAuthorization: async (dto) => {
+    try {
+      const created = await apiClient.createAuthorization(dto);
+      await get().fetchAuthorizations();
+      await get().evaluateTargetAuthorization(get().targetUrl);
+      return created;
+    } catch (err) {
+      console.error('Failed to create authorization:', err);
+      return null;
+    }
+  },
+
+  revokeAuthorization: async (id, reason) => {
+    try {
+      const ok = await apiClient.revokeAuthorization(id, reason);
+      await get().fetchAuthorizations();
+      await get().evaluateTargetAuthorization(get().targetUrl);
+      return ok;
+    } catch (err) {
+      console.error('Failed to revoke authorization:', err);
+      return false;
+    }
+  },
+
+  evaluateTargetAuthorization: async (url) => {
+    const target = url || get().targetUrl;
+    if (!target) return null;
+    try {
+      const evalResult = await apiClient.evaluateAuthorization(target);
+      set({ targetAuthorization: evalResult });
+      return evalResult;
+    } catch (_) {
+      return null;
+    }
+  },
+
   fetchPlan: async (taskId: string) => {
     try {
       const plan = await apiClient.getTaskPlan(taskId);
@@ -139,9 +207,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     const target = targetUrl || get().targetUrl;
     const task = taskId || get().activeTaskId || 'task_demo_1';
 
-    // Fetch plan for active task if not yet loaded
-    get().fetchPlan(task);
-
+    // Clear previous run state immediately: stale screenshots, bugs, evidence, activeStepGoal
     set({
       agentStatus: 'RUNNING',
       activeRunId: runId,
@@ -150,8 +216,29 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       isPaused: false,
       isUserTakeover: false,
       currentStep: 1,
-      liveLogs: [`[${new Date().toLocaleTimeString()}] Starting run ${runId}...`]
+      activeStepGoal: undefined,
+      liveScreenshotBase64: undefined,
+      candidateBugs: [],
+      evidence: [],
+      liveLogs: [`[${new Date().toLocaleTimeString()}] Initializing test run ${runId} against ${target}...`]
     });
+
+    // Check target authorization status before executing
+    const evalResult = await get().evaluateTargetAuthorization(target);
+    if (evalResult && !evalResult.authorized) {
+      set({
+        agentStatus: 'BLOCKED',
+        liveLogs: [
+          `[${new Date().toLocaleTimeString()}] [PERMISSION BLOCKED] Target URL ${target} is not authorized for autonomous AI execution.`,
+          `[${new Date().toLocaleTimeString()}] Reason: ${evalResult.reason || 'Missing explicit verified authorization record.'}`,
+          `[${new Date().toLocaleTimeString()}] To proceed, authorize this domain via Settings > Authorized Websites or use manual viewing.`
+        ]
+      });
+      return;
+    }
+
+    // Fetch plan for active task if not yet loaded
+    get().fetchPlan(task);
 
     try {
       await apiClient.startRun({
@@ -160,9 +247,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         taskId: task
       });
     } catch (err: any) {
+      const isAuthBlocker = err.message?.includes('AUTHORIZATION_REQUIRED') || err.message?.includes('AUTHORIZATION_REVOKED') || err.message?.includes('AUTHORIZATION_EXPIRED');
       set({
-        agentStatus: 'FAILED',
-        liveLogs: [...get().liveLogs, `[${new Date().toLocaleTimeString()}] Error: ${err.message}`]
+        agentStatus: isAuthBlocker ? 'BLOCKED' : 'FAILED',
+        liveLogs: [...get().liveLogs, `[${new Date().toLocaleTimeString()}] ${isAuthBlocker ? '[PERMISSION BLOCKER]' : 'Execution Error'}: ${err.message}`]
       });
       return;
     }
@@ -182,18 +270,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       try {
         const state = await apiClient.getRunState(activeId);
         if (state) {
+          const isFailedOrBlocked = state.status === 'FAILED' || state.status === 'BLOCKED';
           set({
             agentStatus: state.status,
             currentStep: state.currentStep,
             totalSteps: state.totalSteps || get().totalSteps,
             activeStepGoal: state.activeStepGoal,
-            liveScreenshotBase64: state.latestScreenshotBase64 || get().liveScreenshotBase64,
+            // Do not keep or reuse old screenshot if status is failed/blocked and no new screenshot was provided
+            liveScreenshotBase64: state.latestScreenshotBase64 ? state.latestScreenshotBase64 : (isFailedOrBlocked ? undefined : get().liveScreenshotBase64),
             liveLogs: state.logs && state.logs.length > 0 ? state.logs : get().liveLogs,
             candidateBugs: state.candidateBugs || get().candidateBugs,
             evidence: state.evidence || get().evidence
           });
 
-          if (state.status === 'COMPLETED' || state.status === 'FAILED' || state.status === 'CANCELLED') {
+          if (state.status === 'COMPLETED' || state.status === 'FAILED' || state.status === 'CANCELLED' || state.status === 'BLOCKED') {
             clearInterval(interval);
             get().fetchMetrics();
             get().fetchTasks();

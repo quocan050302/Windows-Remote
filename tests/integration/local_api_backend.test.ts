@@ -58,7 +58,7 @@ test('Local Backend API Integration - Handles health, tasks import, plans and se
     assert.strictEqual(planJson.taskId, importedTaskId);
     assert.ok(planJson.steps.length > 0);
 
-    // 6. Security: Open External Link Scheme Validation
+    // 6. Security: Open External Link Scheme Validation (Manual Viewing)
     const resBadScheme = await fetch(`${baseUrl}/api/open-external`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -66,14 +66,36 @@ test('Local Backend API Integration - Handles health, tasks import, plans and se
     });
     assert.strictEqual(resBadScheme.status, 400);
 
-    const resBadHost = await fetch(`${baseUrl}/api/open-external`, {
+    const resFileScheme = await fetch(`${baseUrl}/api/open-external`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: 'https://malicious-external-site.com/exploit' })
+      body: JSON.stringify({ url: 'file:///C:/Windows/System32' })
     });
-    assert.strictEqual(resBadHost.status, 403);
+    assert.strictEqual(resFileScheme.status, 400);
 
-    // 7. MCP Status Endpoint
+    const resValidExternal = await fetch(`${baseUrl}/api/open-external`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://www.nautal.com/en/' })
+    });
+    assert.strictEqual(resValidExternal.status, 200);
+
+    // 7. Authorization API Endpoints
+    const resAuthList = await fetch(`${baseUrl}/api/authorizations`);
+    assert.strictEqual(resAuthList.status, 200);
+    const authList = await resAuthList.json();
+    assert.ok(Array.isArray(authList));
+
+    const resEvalUnauthorized = await fetch(`${baseUrl}/api/authorizations/evaluate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetUrl: 'https://www.nautal.com/en/' })
+    });
+    assert.strictEqual(resEvalUnauthorized.status, 200);
+    const evalUnauth = await resEvalUnauthorized.json();
+    assert.strictEqual(evalUnauth.authorized, false);
+
+    // 8. MCP Status Endpoint
     const resMcp = await fetch(`${baseUrl}/api/mcp/status`);
     assert.strictEqual(resMcp.status, 200);
     const mcpJson = await resMcp.json();

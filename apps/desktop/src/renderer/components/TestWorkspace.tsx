@@ -12,13 +12,19 @@ import {
   ChevronLeft,
   ChevronRight,
   Shield,
+  ShieldAlert,
+  ShieldCheck,
   Camera,
   Terminal,
   Globe,
   Radio,
   FileText,
-  Cpu
+  Cpu,
+  Lock,
+  PlusCircle,
+  X
 } from 'lucide-react';
+import type { CreateAuthorizationDto } from '@test-io-agent/shared';
 
 export const TestWorkspace: React.FC = () => {
   const { 
@@ -42,12 +48,25 @@ export const TestWorkspace: React.FC = () => {
     pauseRun, 
     resumeRun, 
     stopRun, 
-    triggerTakeover 
+    triggerTakeover,
+    targetAuthorization,
+    evaluateTargetAuthorization,
+    createAuthorization
   } = useStudioStore();
 
   const [collapseLeft, setCollapseLeft] = useState(false);
   const [collapseRight, setCollapseRight] = useState(false);
   const [activeTabLogs, setActiveTabLogs] = useState<'logs' | 'bugs' | 'evidence'>('logs');
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isAuthorizing, setIsAuthorizing] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Form states for authorization modal
+  const [authDomain, setAuthDomain] = useState('');
+  const [authGrantingParty, setAuthGrantingParty] = useState('Customer / Product Owner');
+  const [authScope, setAuthScope] = useState('Autonomous Exploratory QA & Regression Testing');
+  const [authExpiresInDays, setAuthExpiresInDays] = useState('30');
+  const [authAllowedActions, setAuthAllowedActions] = useState<string[]>(['click', 'fill', 'navigate', 'scroll']);
 
   // Find active task if any
   const currentTask = tasks.find((t) => t.id === activeTaskId) || tasks[0];
@@ -58,12 +77,62 @@ export const TestWorkspace: React.FC = () => {
     }
   }, [activeTaskId, fetchPlan]);
 
+  useEffect(() => {
+    evaluateTargetAuthorization(targetUrl);
+    try {
+      const u = new URL(targetUrl);
+      setAuthDomain(u.hostname);
+    } catch (_) {}
+  }, [targetUrl, evaluateTargetAuthorization]);
+
   const handleOpenTargetExternal = async () => {
     try {
       await apiClient.openExternal(targetUrl);
     } catch (_) {
       window.open(targetUrl, '_blank', 'noopener,noreferrer');
     }
+  };
+
+  const handleCreateAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authDomain.trim() || !authGrantingParty.trim()) {
+      setAuthError('Domain and Granting Party are required.');
+      return;
+    }
+    setAuthError(null);
+    setIsAuthorizing(true);
+    try {
+      const expiresInDays = parseInt(authExpiresInDays, 10);
+      const expiresAt = expiresInDays > 0 
+        ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString() 
+        : undefined;
+
+      const dto: CreateAuthorizationDto = {
+        domain: authDomain.trim(),
+        grantingParty: authGrantingParty.trim(),
+        scope: authScope.trim(),
+        allowedActions: authAllowedActions,
+        expiresAt
+      };
+
+      const res = await createAuthorization(dto);
+      if (res) {
+        setIsAuthModalOpen(false);
+        await evaluateTargetAuthorization(targetUrl);
+      } else {
+        setAuthError('Failed to create authorization record.');
+      }
+    } catch (err: any) {
+      setAuthError(err.message || 'Error creating authorization');
+    } finally {
+      setIsAuthorizing(false);
+    }
+  };
+
+  const toggleAction = (action: string) => {
+    setAuthAllowedActions(prev => 
+      prev.includes(action) ? prev.filter(a => a !== action) : [...prev, action]
+    );
   };
 
   return (
@@ -75,6 +144,7 @@ export const TestWorkspace: React.FC = () => {
             <span className={`w-3 h-3 rounded-full ${
               agentStatus === 'RUNNING' ? 'bg-emerald-400 animate-pulse' :
               agentStatus === 'PAUSED' ? 'bg-amber-400' :
+              agentStatus === 'BLOCKED' ? 'bg-amber-500 ring-2 ring-amber-500/30' :
               agentStatus === 'CANCELLED' ? 'bg-rose-400' : 
               agentStatus === 'COMPLETED' ? 'bg-blue-400' : 'bg-slate-400'
             }`}></span>
@@ -98,6 +168,31 @@ export const TestWorkspace: React.FC = () => {
 
           <span className="text-slate-600 hidden md:inline">|</span>
 
+          {/* Authorization Status Badge */}
+          {targetAuthorization?.isTestIo ? (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-950/40 border border-rose-500/40 text-[11px] font-semibold text-rose-300" title="Test IO platform portal is strictly prohibited from autonomous execution">
+              <ShieldAlert className="w-3.5 h-3.5 text-rose-400" /> Test IO Protected (No Automation)
+            </div>
+          ) : targetAuthorization?.authorized ? (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-950/40 border border-emerald-500/40 text-[11px] font-semibold text-emerald-300">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Authorized Target
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-950/40 border border-amber-500/40 text-[11px] font-semibold text-amber-300">
+                <Lock className="w-3 h-3 text-amber-400" /> Authorization Required
+              </span>
+              <button
+                onClick={() => setIsAuthModalOpen(true)}
+                className="text-[11px] text-blue-400 hover:text-blue-300 underline font-medium"
+              >
+                Authorize
+              </button>
+            </div>
+          )}
+
+          <span className="text-slate-600 hidden md:inline">|</span>
+
           <div className="text-xs text-slate-400 flex items-center gap-1.5 hidden md:flex">
             <Cpu className="w-3.5 h-3.5 text-purple-400" />
             Reasoning Engine: <span className="text-slate-200 font-semibold">{activeAiRuntime?.providerName || 'Deterministic QA'}</span>
@@ -105,14 +200,25 @@ export const TestWorkspace: React.FC = () => {
           </div>
         </div>
 
-        {/* Live Controls */}
+        {/* Live Controls: Open Website vs Start AI Test */}
         <div className="flex items-center gap-2">
+          {/* Action 1: Manual Browser Viewing (No automation permission required) */}
+          <button 
+            onClick={handleOpenTargetExternal}
+            className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3.5 py-2 rounded-lg border border-slate-700 transition-all hover:text-white"
+            title="Open website in your default browser for manual viewing"
+          >
+            <ExternalLink className="w-3.5 h-3.5 text-blue-400" /> Open Website
+          </button>
+
+          {/* Action 2: Start AI Test (Requires verified automation permission) */}
           {agentStatus !== 'RUNNING' ? (
             <button 
               onClick={() => startRun(activeTaskId, targetUrl)}
               className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-lg shadow-emerald-600/20"
+              title="Launch autonomous Playwright test loop (requires verified authorization)"
             >
-              <Play className="w-3.5 h-3.5 fill-white" /> Start Run
+              <Play className="w-3.5 h-3.5 fill-white" /> Start AI Test
             </button>
           ) : isPaused ? (
             <button 
@@ -281,13 +387,52 @@ export const TestWorkspace: React.FC = () => {
                   className="max-w-full max-h-full object-contain rounded-lg border border-slate-800 shadow-2xl"
                 />
               </div>
+            ) : agentStatus === 'BLOCKED' ? (
+              <div className="text-center space-y-4 max-w-lg p-8 glass-panel border border-amber-500/40 bg-amber-950/20 rounded-2xl shadow-2xl">
+                <ShieldAlert className="w-14 h-14 text-amber-400 mx-auto" />
+                <div className="space-y-2">
+                  <h3 className="text-lg font-bold text-amber-200">Autonomous Testing Blocked</h3>
+                  <div className="inline-block px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-mono">
+                    AUTHORIZATION_REQUIRED
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Target destination <span className="font-mono text-amber-300 font-semibold">{targetUrl}</span> is not authorized for autonomous AI browser interaction.
+                  </p>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    {targetAuthorization?.isTestIo ? (
+                      <span className="text-rose-400 font-medium">
+                        Test IO platform rules strictly prohibit automating tester.test.io (claiming, answers, submission). Please test the customer application directly.
+                      </span>
+                    ) : (
+                      'Agent Studio enforces a strict default-deny policy. You can manually inspect the website in your browser, or create a verified authorization record.'
+                    )}
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-3">
+                  <button
+                    onClick={handleOpenTargetExternal}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-blue-400" /> Open Website (Manual View)
+                  </button>
+                  {!targetAuthorization?.isTestIo && (
+                    <button
+                      onClick={() => setIsAuthModalOpen(true)}
+                      className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs font-semibold text-white shadow-lg shadow-amber-600/30 transition-colors"
+                    >
+                      <Lock className="w-3.5 h-3.5" /> Authorize Website for AI
+                    </button>
+                  )}
+                </div>
+              </div>
             ) : (
-              <div className="text-center space-y-4 max-w-md p-8 glass-panel border border-slate-800">
+              <div className="text-center space-y-4 max-w-md p-8 glass-panel border border-slate-800 rounded-2xl">
                 <Globe className="w-12 h-12 text-blue-400/80 mx-auto animate-pulse" />
                 <div className="space-y-1">
                   <h3 className="text-base font-bold text-white">Playwright Headless Engine Ready</h3>
                   <p className="text-xs text-slate-400 leading-relaxed">
-                    Click <b className="text-emerald-400">Start Run</b> above to launch an authorized Chromium session against <span className="font-mono text-blue-300">{targetUrl}</span>.
+                    Click <b className="text-emerald-400">Start AI Test</b> above to launch an authorized Chromium session against <span className="font-mono text-blue-300">{targetUrl}</span>.
                   </p>
                 </div>
                 <div className="text-[11px] text-slate-500 font-mono">
@@ -435,6 +580,131 @@ export const TestWorkspace: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Verified Authorization Modal */}
+      {isAuthModalOpen && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0f172a] border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <ShieldCheck className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-base">Grant Verified Testing Authorization</h3>
+                  <p className="text-[11px] text-slate-400">Establish explicit permission boundary for autonomous AI execution</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsAuthModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateAuth} className="p-6 space-y-4 text-xs">
+              {authError && (
+                <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-500/40 text-rose-300">
+                  {authError}
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-slate-300">Target Domain / Origin</label>
+                <input
+                  type="text"
+                  value={authDomain}
+                  onChange={(e) => setAuthDomain(e.target.value)}
+                  placeholder="e.g. www.nautal.com or test-domain.local"
+                  required
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3.5 py-2 text-white font-mono text-xs focus:outline-none focus:border-blue-500"
+                />
+                <p className="text-[10px] text-slate-500">Domain scope strictly limits Playwright navigation, popups, and redirects.</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-slate-300">Verified Granting Party</label>
+                <input
+                  type="text"
+                  value={authGrantingParty}
+                  onChange={(e) => setAuthGrantingParty(e.target.value)}
+                  placeholder="e.g. Nautal QA Team / Test IO Customer"
+                  required
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3.5 py-2 text-white text-xs focus:outline-none focus:border-blue-500"
+                />
+                <p className="text-[10px] text-slate-500">Must represent a real authorized entity or customer providing testing permission.</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block font-semibold text-slate-300">Authorized Scope & Purpose</label>
+                <input
+                  type="text"
+                  value={authScope}
+                  onChange={(e) => setAuthScope(e.target.value)}
+                  placeholder="e.g. Navigation & Exploratory Testing"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3.5 py-2 text-white text-xs focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="block font-semibold text-slate-300">Validity Period</label>
+                  <select
+                    value={authExpiresInDays}
+                    onChange={(e) => setAuthExpiresInDays(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="1">1 Day</option>
+                    <option value="7">7 Days</option>
+                    <option value="30">30 Days</option>
+                    <option value="90">90 Days</option>
+                    <option value="0">Indefinite (Local/Dev Only)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block font-semibold text-slate-300">Allowed Actions</label>
+                  <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+                    {['click', 'fill', 'navigate', 'scroll'].map(action => (
+                      <label key={action} className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={authAllowedActions.includes(action)}
+                          onChange={() => toggleAction(action)}
+                          className="rounded bg-slate-900 border-slate-700 text-blue-500"
+                        />
+                        <span className="capitalize">{action}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-blue-950/20 border border-blue-500/20 text-[11px] text-slate-400 leading-relaxed">
+                <span className="text-blue-400 font-semibold">Default-Deny Policy:</span> This authorization is stored locally with an audit log. Autonomous AI browser actions will be strictly confined to this domain.
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsAuthModalOpen(false)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isAuthorizing}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/20 disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" /> {isAuthorizing ? 'Recording...' : 'Grant & Authorize'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
