@@ -28,10 +28,8 @@ export function createLocalApiServer(
     // 1. Strict Security & Origin Guard
     const origin = req.headers.origin || '';
     const isAllowedOrigin =
-      origin === 'http://localhost:3000' ||
-      origin === 'http://127.0.0.1:3000' ||
-      origin === 'http://localhost:4173' ||
-      origin === 'http://127.0.0.1:4173' ||
+      origin.startsWith('http://localhost:') ||
+      origin.startsWith('http://127.0.0.1:') ||
       origin === '';
 
     if (!isAllowedOrigin && origin) {
