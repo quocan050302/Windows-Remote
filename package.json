@@ -8,6 +8,7 @@
     "apps/*"
   ],
   "scripts": {
+    "start": "cmd /c start.bat",
     "dev": "npm run dev:desktop",
     "dev:desktop": "npm --workspace apps/desktop run dev",
     "dev:demo": "npm --workspace apps/demo-testing-lab run dev",
