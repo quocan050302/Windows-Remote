@@ -5,6 +5,8 @@
  * Never silently skips execution.
  */
 
+import type { BrowserFocusResult, CheckPageResult, ResumeReadinessResult } from '@test-io-agent/shared';
+
 export type RuntimeType = 'electron' | 'browser-api' | 'disconnected';
 
 export interface RuntimeInfo {
@@ -152,6 +154,83 @@ class ApiClient {
     if (!res.ok) return [];
     const data = await res.json();
     return data.logs || [];
+  }
+
+  public async focusTestingBrowser(runId?: string): Promise<BrowserFocusResult> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.focusTestingBrowser) {
+      return (window as any).electronAPI.focusTestingBrowser(runId);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/run/focus-browser`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId })
+    });
+    if (!res.ok) {
+      return { focused: false, osLevelFocusAchieved: false, message: 'Failed to request browser focus' };
+    }
+    return res.json();
+  }
+
+  public async takeoverBrowser(runId: string, active: boolean, reason?: string): Promise<any> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.takeoverBrowser) {
+      return (window as any).electronAPI.takeoverBrowser({ runId, active, reason });
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/run/takeover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId, active, reason })
+    });
+    return res.json();
+  }
+
+  public async checkPageAgain(runId: string): Promise<CheckPageResult> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.checkPageAgain) {
+      return (window as any).electronAPI.checkPageAgain(runId);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/run/check-page`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to check page: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  public async validateResumeReadiness(runId: string): Promise<ResumeReadinessResult> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.validateResumeReadiness) {
+      return (window as any).electronAPI.validateResumeReadiness(runId);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/run/${encodeURIComponent(runId)}/resume-readiness`);
+    if (!res.ok) {
+      return {
+        canResume: false,
+        pageReady: false,
+        authorizationValid: false,
+        sessionAlive: false,
+        reason: 'Failed to fetch resume readiness'
+      };
+    }
+    return res.json();
+  }
+
+  public async resumeAfterHumanVerification(runId: string): Promise<boolean> {
+    if (typeof window !== 'undefined' && (window as any).electronAPI?.resumeAfterHumanVerification) {
+      return (window as any).electronAPI.resumeAfterHumanVerification(runId);
+    }
+    const res = await fetch(`${LOCAL_API_BASE}/run/resume-verification`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to resume after verification: ${res.statusText}`);
+    }
+    const data = await res.json();
+    return Boolean(data.success);
   }
 
   public async getMcpStatus() {

@@ -11,7 +11,12 @@ import type {
   AuthorizationRecord,
   AuthorizationEvaluationResult,
   CreateAuthorizationDto,
-  RequirementsCoverageMatrix
+  RequirementsCoverageMatrix,
+  BrowserLaunchMode,
+  ControlOwnership,
+  BrowserFocusResult,
+  CheckPageResult,
+  ResumeReadinessResult
 } from '@test-io-agent/shared';
 import { apiClient, type RuntimeInfo } from './api';
 
@@ -28,6 +33,12 @@ export interface StudioState {
   targetUrl: string;
   isPaused: boolean;
   isUserTakeover: boolean;
+  browserMode?: BrowserLaunchMode;
+  controlOwnership?: ControlOwnership;
+  canResume?: boolean;
+  isVerifyingPage?: boolean;
+  checkPageResult?: CheckPageResult;
+  resumeReadiness?: ResumeReadinessResult;
   candidateBugs: CandidateBug[];
   evidence: EvidenceRecord[];
   recentReports: ReportDraft[];
@@ -72,6 +83,10 @@ export interface StudioState {
   resumeRun: () => Promise<void>;
   stopRun: () => Promise<void>;
   triggerTakeover: () => Promise<void>;
+  focusTestingBrowser: () => Promise<BrowserFocusResult>;
+  checkPageAgain: () => Promise<CheckPageResult>;
+  validateResumeReadiness: () => Promise<ResumeReadinessResult>;
+  resumeAfterHumanVerification: () => Promise<boolean>;
   fetchMetrics: () => Promise<void>;
   fetchMcpStatus: () => Promise<void>;
   connectMcp: () => Promise<void>;
@@ -91,6 +106,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   targetUrl: 'http://127.0.0.1:4173',
   isPaused: false,
   isUserTakeover: false,
+  browserMode: 'HEADLESS_AUTOMATION',
+  controlOwnership: 'AI_PLAYWRIGHT',
+  canResume: false,
+  isVerifyingPage: false,
+  checkPageResult: undefined,
+  resumeReadiness: undefined,
   candidateBugs: [],
   evidence: [],
   recentReports: [],
@@ -220,6 +241,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       targetUrl: target,
       isPaused: false,
       isUserTakeover: false,
+      controlOwnership: 'AI_PLAYWRIGHT',
+      canResume: false,
+      isVerifyingPage: false,
+      checkPageResult: undefined,
+      resumeReadiness: undefined,
       currentStep: 1,
       activeStepGoal: undefined,
       liveScreenshotBase64: undefined,
@@ -282,13 +308,18 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         const state = await apiClient.getRunState(activeId);
         if (state) {
           const isTerminal = ['COMPLETED', 'COMPLETED_WITH_FINDINGS', 'PARTIAL', 'BLOCKED_SITE_VERIFICATION', 'BLOCKED_AUTHORIZATION', 'BLOCKED', 'NEEDS_REVIEW', 'FAILED', 'CANCELLED'].includes(state.status);
+          const isHumanVerification = state.status === 'AWAITING_HUMAN_VERIFICATION' || state.status === 'HUMAN_CONTROL_ACTIVE' || state.status === 'READY_TO_RESUME' || state.status === 'VERIFYING_PAGE_ACCESS';
+
           set({
             agentStatus: state.status,
             currentStep: state.currentStep,
             totalSteps: state.totalSteps || get().totalSteps,
-            // Only keep activeStepGoal if still actively running; clear when finished
-            activeStepGoal: isTerminal ? undefined : state.activeStepGoal,
-            liveScreenshotBase64: state.latestScreenshotBase64 ? state.latestScreenshotBase64 : (isTerminal ? get().liveScreenshotBase64 : get().liveScreenshotBase64),
+            browserMode: state.browserMode || get().browserMode,
+            controlOwnership: state.controlOwnership || get().controlOwnership,
+            canResume: state.canResume !== undefined ? state.canResume : get().canResume,
+            // Only keep activeStepGoal if still actively running; clear when finished or awaiting
+            activeStepGoal: (isTerminal || isHumanVerification) ? undefined : state.activeStepGoal,
+            liveScreenshotBase64: state.latestScreenshotBase64 ? state.latestScreenshotBase64 : get().liveScreenshotBase64,
             liveLogs: state.logs && state.logs.length > 0 ? state.logs : get().liveLogs,
             candidateBugs: state.candidateBugs || get().candidateBugs,
             evidence: state.evidence || get().evidence,
@@ -346,9 +377,85 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   },
 
   triggerTakeover: async () => {
-    const nextState = !get().isUserTakeover;
-    set({ isUserTakeover: nextState, isPaused: nextState, agentStatus: nextState ? 'PAUSED' : 'RUNNING' });
-    await apiClient.takeoverMcp(nextState);
+    const runId = get().activeRunId;
+    const currentTakeover = get().isUserTakeover;
+    const nextTakeover = !currentTakeover;
+
+    if (!runId) {
+      set({ isUserTakeover: nextTakeover, isPaused: nextTakeover, agentStatus: nextTakeover ? 'PAUSED' : 'READY' });
+      await apiClient.takeoverMcp(nextTakeover);
+      return;
+    }
+
+    // Call unified backend takeover (pauses scheduling in orchestrator and transfers input control)
+    const result = await apiClient.takeoverBrowser(runId, nextTakeover, 'User clicked Human Takeover button');
+    if (result) {
+      const isHuman = result.controlOwnership === 'HUMAN';
+      set({
+        isUserTakeover: isHuman,
+        controlOwnership: result.controlOwnership,
+        isPaused: isHuman,
+        agentStatus: isHuman ? 'HUMAN_CONTROL_ACTIVE' : 'RUNNING'
+      });
+    }
+  },
+
+  focusTestingBrowser: async () => {
+    const runId = get().activeRunId || undefined;
+    return apiClient.focusTestingBrowser(runId);
+  },
+
+  checkPageAgain: async () => {
+    const runId = get().activeRunId;
+    if (!runId) {
+      throw new Error('No active test run to verify.');
+    }
+    set({ isVerifyingPage: true });
+    try {
+      const res = await apiClient.checkPageAgain(runId);
+      set({
+        checkPageResult: res,
+        canResume: res.canResume,
+        agentStatus: res.isReady ? 'READY_TO_RESUME' : (res.isBlocked ? 'AWAITING_HUMAN_VERIFICATION' : get().agentStatus),
+        blockerReason: res.blockerReason
+      });
+      return res;
+    } finally {
+      set({ isVerifyingPage: false });
+    }
+  },
+
+  validateResumeReadiness: async () => {
+    const runId = get().activeRunId;
+    if (!runId) {
+      return { canResume: false, pageReady: false, authorizationValid: false, sessionAlive: false, reason: 'No active run' };
+    }
+    const res = await apiClient.validateResumeReadiness(runId);
+    set({ resumeReadiness: res, canResume: res.canResume });
+    return res;
+  },
+
+  resumeAfterHumanVerification: async () => {
+    const runId = get().activeRunId;
+    if (!runId) return false;
+    try {
+      const success = await apiClient.resumeAfterHumanVerification(runId);
+      if (success) {
+        set({
+          agentStatus: 'RUNNING',
+          isPaused: false,
+          isUserTakeover: false,
+          controlOwnership: 'AI_PLAYWRIGHT',
+          canResume: false
+        });
+      }
+      return success;
+    } catch (err: any) {
+      set({
+        blockerReason: err.message || String(err)
+      });
+      return false;
+    }
   },
 
   fetchMetrics: async () => {

@@ -12,7 +12,8 @@ import type {
   VerificationResult,
   AuthorizationRecord,
   PermissionDecision,
-  TestPlan
+  TestPlan,
+  BrowserFocusResult
 } from '@test-io-agent/shared';
 
 interface InternalSession {
@@ -42,9 +43,12 @@ export class BrowserSessionManager {
     const browserId = `b_${Date.now()}`;
     const contextId = `ctx_${Date.now()}`;
 
+    const launchMode = opts.launchMode || (opts.headless ? 'HEADLESS_AUTOMATION' : 'VISIBLE_SUPERVISED');
+    const isHeadless = launchMode === 'HEADLESS_AUTOMATION' ? true : (opts.headless ?? false);
+
     // Launch Chromium instance
     const browser = await chromium.launch({
-      headless: opts.headless ?? false
+      headless: isHeadless
     });
 
     const context = await browser.newContext({
@@ -59,7 +63,10 @@ export class BrowserSessionManager {
       activePages: [],
       authorizationId: authorization?.id,
       startTime: new Date().toISOString(),
-      isClosed: false
+      isClosed: false,
+      runId: opts.runId,
+      launchMode,
+      isHeadless
     };
 
     const internalSession: InternalSession = {
@@ -70,8 +77,91 @@ export class BrowserSessionManager {
       consoleErrors: new Map()
     };
 
+    browser.on('disconnected', () => {
+      internalSession.session.isClosed = true;
+      (internalSession.session as any).closedByUser = true;
+    });
+
     this.sessions.set(sessionId, internalSession);
     return sessionRecord;
+  }
+
+  /**
+   * Create a headful visible browser session explicitly for human-interactive or supervised runs
+   */
+  public async createVisibleBrowserSession(
+    options?: BrowserSessionOptions,
+    authorization?: AuthorizationRecord
+  ): Promise<BrowserSession> {
+    return this.createBrowserSession(
+      {
+        ...options,
+        headless: false,
+        launchMode: 'VISIBLE_SUPERVISED'
+      },
+      authorization
+    );
+  }
+
+  /**
+   * Bring the testing browser window and page to the front
+   */
+  public async focusTestingBrowser(sessionId: string): Promise<BrowserFocusResult> {
+    const internal = this.sessions.get(sessionId);
+    if (!internal || internal.session.isClosed) {
+      return {
+        sessionId,
+        broughtToFront: false,
+        message: `Browser session '${sessionId}' is not active or has been closed.`
+      };
+    }
+
+    const firstPageId = internal.session.activePages[0];
+    const page = firstPageId ? internal.pages.get(firstPageId) : null;
+    if (page) {
+      try {
+        await page.bringToFront();
+        return {
+          sessionId,
+          broughtToFront: true,
+          windowIdentifier: internal.session.browserId,
+          message: 'Testing browser page brought to front. Look for the Chromium window with title matching the tested site.'
+        };
+      } catch (err: any) {
+        return {
+          sessionId,
+          broughtToFront: false,
+          windowIdentifier: internal.session.browserId,
+          message: `Could not bring page to front: ${err.message}`
+        };
+      }
+    }
+
+    return {
+      sessionId,
+      broughtToFront: false,
+      message: 'No active pages found in browser session.'
+    };
+  }
+
+  public getSession(sessionId: string): BrowserSession | null {
+    const internal = this.sessions.get(sessionId);
+    return internal ? { ...internal.session } : null;
+  }
+
+  public isSessionAlive(sessionId: string): boolean {
+    const internal = this.sessions.get(sessionId);
+    return Boolean(internal && !internal.session.isClosed && internal.browser.isConnected());
+  }
+
+  public getSessionFirstPage(sessionId: string): { pageId: string; page: Page } | null {
+    const internal = this.sessions.get(sessionId);
+    if (!internal || internal.session.isClosed) return null;
+    const pageId = internal.session.activePages[0];
+    if (!pageId) return null;
+    const page = internal.pages.get(pageId);
+    if (!page) return null;
+    return { pageId, page };
   }
 
   /**
@@ -143,6 +233,14 @@ export class BrowserSessionManager {
     internal.consoleErrors.set(pageId, errors);
     internal.session.activePages.push(pageId);
 
+    page.on('close', () => {
+      internal.pages.delete(pageId);
+      internal.session.activePages = internal.session.activePages.filter((id) => id !== pageId);
+      if (internal.pages.size === 0) {
+        internal.session.isClosed = true;
+      }
+    });
+
     // Navigate to URL
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
@@ -173,10 +271,6 @@ export class BrowserSessionManager {
     } catch (_) {
       return undefined;
     }
-  }
-
-  public getSession(sessionId: string): BrowserSession | undefined {
-    return this.sessions.get(sessionId)?.session;
   }
 
   /**
@@ -487,4 +581,15 @@ export async function verifyBrowserState(
   expectation: StateExpectation
 ): Promise<VerificationResult> {
   return browserSessionManager.verifyBrowserState(pageId, expectation);
+}
+
+export async function createVisibleBrowserSession(
+  options?: BrowserSessionOptions,
+  authorization?: AuthorizationRecord
+): Promise<BrowserSession> {
+  return browserSessionManager.createVisibleBrowserSession(options, authorization);
+}
+
+export async function focusTestingBrowser(sessionId: string): Promise<BrowserFocusResult> {
+  return browserSessionManager.focusTestingBrowser(sessionId);
 }

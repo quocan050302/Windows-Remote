@@ -22,7 +22,10 @@ import {
   Cpu,
   Lock,
   PlusCircle,
-  X
+  X,
+  Monitor,
+  RefreshCw,
+  Check
 } from 'lucide-react';
 import type { CreateAuthorizationDto } from '@test-io-agent/shared';
 
@@ -55,8 +58,19 @@ export const TestWorkspace: React.FC = () => {
     coverageMatrix,
     blockerReason,
     providerUsed,
-    modelUsed
+    modelUsed,
+    browserMode,
+    controlOwnership,
+    canResume,
+    isVerifyingPage,
+    checkPageResult,
+    focusTestingBrowser,
+    checkPageAgain,
+    resumeAfterHumanVerification
   } = useStudioStore();
+
+  const [focusFeedback, setFocusFeedback] = useState<string | null>(null);
+  const [resumingLoading, setResumingLoading] = useState(false);
 
   const [collapseLeft, setCollapseLeft] = useState(false);
   const [collapseRight, setCollapseRight] = useState(false);
@@ -139,6 +153,32 @@ export const TestWorkspace: React.FC = () => {
     );
   };
 
+  const handleFocusBrowser = async () => {
+    try {
+      const res = await focusTestingBrowser();
+      if (res.focused) {
+        setFocusFeedback(res.osLevelFocusAchieved ? 'Testing browser focused!' : (res.message || 'Chromium window brought forward. Check taskbar if not visible.'));
+      } else {
+        setFocusFeedback(res.message || 'Could not focus browser. Please click the Chromium icon in your taskbar.');
+      }
+      setTimeout(() => setFocusFeedback(null), 4000);
+    } catch (e: any) {
+      setFocusFeedback(e.message || 'Error focusing browser');
+      setTimeout(() => setFocusFeedback(null), 4000);
+    }
+  };
+
+  const handleResumeVerification = async () => {
+    setResumingLoading(true);
+    try {
+      await resumeAfterHumanVerification();
+    } catch (e: any) {
+      // Handled in store
+    } finally {
+      setResumingLoading(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[#0a0e1a]">
       {/* Top Action Bar / Live Controls */}
@@ -202,6 +242,34 @@ export const TestWorkspace: React.FC = () => {
 
           <span className="text-slate-600 hidden md:inline">|</span>
 
+          {/* Browser Mode Status Indicator */}
+          <div className="flex items-center gap-1.5 text-xs">
+            <Monitor className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="text-slate-400">Mode:</span>
+            <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold ${
+              browserMode === 'VISIBLE_SUPERVISED' 
+                ? 'bg-cyan-950/60 border border-cyan-500/40 text-cyan-300' 
+                : browserMode === 'MANUAL_ONLY'
+                ? 'bg-amber-950/60 border border-amber-500/40 text-amber-300'
+                : 'bg-slate-800 border border-slate-700 text-slate-400'
+            }`}>
+              {browserMode === 'VISIBLE_SUPERVISED' ? 'Visible Browser' : browserMode === 'MANUAL_ONLY' ? 'Manual Control' : 'Headless Session'}
+            </span>
+          </div>
+
+          <span className="text-slate-600 hidden lg:inline">|</span>
+
+          {/* Control Ownership Indicator */}
+          <div className="flex items-center gap-1.5 text-xs hidden lg:flex">
+            <span className={`w-2 h-2 rounded-full ${controlOwnership === 'HUMAN' ? 'bg-purple-400 animate-pulse' : 'bg-emerald-400'}`}></span>
+            <span className="text-slate-400">Ownership:</span>
+            <span className={`font-semibold text-[11px] ${controlOwnership === 'HUMAN' ? 'text-purple-300' : 'text-emerald-300'}`}>
+              {controlOwnership === 'HUMAN' ? 'Human Takeover' : 'AI Playwright'}
+            </span>
+          </div>
+
+          <span className="text-slate-600 hidden md:inline">|</span>
+
           <div className="text-xs text-slate-400 flex items-center gap-1.5 hidden md:flex">
             <Cpu className="w-3.5 h-3.5 text-purple-400" />
             Reasoning Engine: <span className="text-slate-200 font-semibold">{providerUsed || activeAiRuntime?.providerName || 'Deterministic QA Engine'}</span>
@@ -221,7 +289,7 @@ export const TestWorkspace: React.FC = () => {
           </button>
 
           {/* Action 2: Start AI Test (Requires verified automation permission) */}
-          {agentStatus !== 'RUNNING' ? (
+          {agentStatus !== 'RUNNING' && agentStatus !== 'AWAITING_HUMAN_VERIFICATION' && agentStatus !== 'HUMAN_CONTROL_ACTIVE' && agentStatus !== 'READY_TO_RESUME' ? (
             <button 
               onClick={() => startRun(activeTaskId, targetUrl)}
               className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-lg shadow-emerald-600/20"
@@ -229,12 +297,14 @@ export const TestWorkspace: React.FC = () => {
             >
               <Play className="w-3.5 h-3.5 fill-white" /> Start AI Test
             </button>
-          ) : isPaused ? (
+          ) : isPaused || agentStatus === 'READY_TO_RESUME' ? (
             <button 
-              onClick={resumeRun}
-              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-lg shadow-emerald-600/20"
+              onClick={agentStatus === 'READY_TO_RESUME' ? handleResumeVerification : resumeRun}
+              disabled={agentStatus === 'READY_TO_RESUME' && !canResume}
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-lg shadow-emerald-600/20"
+              title={agentStatus === 'READY_TO_RESUME' && !canResume ? 'Verification must be completed first' : 'Resume AI test execution'}
             >
-              <Play className="w-3.5 h-3.5 fill-white" /> Resume
+              <Play className="w-3.5 h-3.5 fill-white" /> {resumingLoading ? 'Resuming...' : 'Resume AI Testing'}
             </button>
           ) : (
             <button 
@@ -248,18 +318,18 @@ export const TestWorkspace: React.FC = () => {
           <button 
             onClick={triggerTakeover}
             className={`flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-lg border transition-all ${
-              isUserTakeover 
+              isUserTakeover || controlOwnership === 'HUMAN'
                 ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-600/20' 
                 : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200'
             }`}
-            title="Temporarily freeze autonomous actions for direct human QA takeover"
+            title="Temporarily freeze autonomous Playwright actions for direct human QA takeover"
           >
-            <UserCheck className="w-3.5 h-3.5" /> {isUserTakeover ? 'Release Takeover' : 'Human Takeover'}
+            <UserCheck className="w-3.5 h-3.5" /> {isUserTakeover || controlOwnership === 'HUMAN' ? 'Release Control' : 'Human Takeover'}
           </button>
 
           <button 
             onClick={stopRun}
-            disabled={agentStatus !== 'RUNNING' && agentStatus !== 'PAUSED'}
+            disabled={!['RUNNING', 'PAUSED', 'AWAITING_HUMAN_VERIFICATION', 'HUMAN_CONTROL_ACTIVE', 'READY_TO_RESUME', 'VERIFYING_PAGE_ACCESS'].includes(agentStatus)}
             className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-lg shadow-rose-600/20"
           >
             <Square className="w-3.5 h-3.5 fill-white" /> Emergency Stop
@@ -410,66 +480,192 @@ export const TestWorkspace: React.FC = () => {
           {/* Browser Address & Session Bar */}
           <div className="bg-[#121829] border-b border-slate-800 px-4 py-2 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <span className={`w-2.5 h-2.5 rounded-full ${agentStatus === 'RUNNING' ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`}></span>
+              <span className={`w-2.5 h-2.5 rounded-full ${
+                agentStatus === 'RUNNING' ? 'bg-emerald-400 animate-pulse' :
+                agentStatus === 'AWAITING_HUMAN_VERIFICATION' || agentStatus === 'HUMAN_CONTROL_ACTIVE' ? 'bg-amber-400 animate-pulse' :
+                agentStatus === 'READY_TO_RESUME' ? 'bg-cyan-400' : 'bg-slate-500'
+              }`}></span>
               <span className="text-xs font-semibold text-slate-300">
-                Playwright Session {agentStatus === 'RUNNING' ? '(Active Engine)' : '(Standby)'}
+                Playwright Session {agentStatus === 'RUNNING' ? '(Active Engine)' : agentStatus === 'HUMAN_CONTROL_ACTIVE' ? '(Human Control Enabled)' : agentStatus === 'AWAITING_HUMAN_VERIFICATION' ? '(Awaiting Human Verification)' : '(Standby)'}
+              </span>
+              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                browserMode === 'VISIBLE_SUPERVISED' 
+                  ? 'bg-cyan-950/80 border border-cyan-500/40 text-cyan-300' 
+                  : 'bg-slate-800 text-slate-400'
+              }`}>
+                {browserMode === 'VISIBLE_SUPERVISED' ? 'Visible Chromium' : 'Headless'}
               </span>
             </div>
 
             <div className="flex-1 max-w-xl bg-[#0b0f19] border border-slate-800 rounded-md px-3 py-1 text-xs font-mono text-slate-300 flex items-center justify-between">
               <span className="truncate">{targetUrl}</span>
-              <button 
-                onClick={handleOpenTargetExternal}
-                className="text-slate-500 hover:text-blue-400 p-0.5 rounded transition-colors ml-2 flex-shrink-0"
-                title="Open in external browser"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                {browserMode === 'VISIBLE_SUPERVISED' && (
+                  <button 
+                    onClick={handleFocusBrowser}
+                    className="flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 bg-cyan-950/60 border border-cyan-500/40 px-2 py-0.5 rounded transition-colors"
+                    title="Bring the visible Playwright Chromium browser to the foreground"
+                  >
+                    <Monitor className="w-3 h-3" /> Focus
+                  </button>
+                )}
+                <button 
+                  onClick={handleOpenTargetExternal}
+                  className="text-slate-500 hover:text-blue-400 p-0.5 rounded transition-colors"
+                  title="Open in external browser"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
-            <div className="flex items-center gap-1 text-[11px] text-slate-400 font-mono">
+            <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
+              {focusFeedback && (
+                <span className="text-[10px] font-sans text-cyan-300 bg-cyan-950 px-2 py-0.5 rounded border border-cyan-800 animate-fade-in">
+                  {focusFeedback}
+                </span>
+              )}
               <span>1280x800</span>
             </div>
           </div>
 
           {/* Real Playwright Session Viewport */}
           <div className="flex-1 relative flex items-center justify-center p-4 bg-[#070b14] overflow-hidden">
-            {agentStatus === 'BLOCKED_SITE_VERIFICATION' ? (
-              <div className="text-center space-y-4 max-w-xl p-8 glass-panel border border-orange-500/50 bg-orange-950/20 rounded-2xl shadow-2xl">
-                <ShieldAlert className="w-14 h-14 text-orange-400 mx-auto" />
-                <div className="space-y-2">
-                  <h3 className="text-lg font-bold text-orange-200">Human Verification Challenge Detected</h3>
-                  <div className="inline-block px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/40 text-orange-400 text-xs font-mono font-bold">
-                    BLOCKED_SITE_VERIFICATION • Cloudflare Turnstile / Bot Challenge
+            {/* Human Verification State Panel: Awaiting, Human Active, Verifying, or Ready To Resume */}
+            {(agentStatus === 'AWAITING_HUMAN_VERIFICATION' ||
+              agentStatus === 'HUMAN_CONTROL_ACTIVE' ||
+              agentStatus === 'VERIFYING_PAGE_ACCESS' ||
+              agentStatus === 'READY_TO_RESUME' ||
+              agentStatus === 'BLOCKED_SITE_VERIFICATION') ? (
+              <div className="text-center space-y-4 max-w-2xl p-6 glass-panel border border-amber-500/50 bg-[#0d1326]/90 rounded-2xl shadow-2xl overflow-y-auto max-h-full">
+                {/* Header Icon & Title */}
+                <div className="flex items-center justify-center gap-3">
+                  <ShieldAlert className="w-10 h-10 text-amber-400" />
+                  <div className="text-left">
+                    <h3 className="text-base font-bold text-white">Security Verification Required</h3>
+                    <p className="text-xs text-amber-300/90">
+                      The website is asking for human verification. Automated testing has been paused.
+                    </p>
                   </div>
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    Target destination <span className="font-mono text-orange-300 font-semibold">{targetUrl}</span> presented an interactive security verification page.
-                  </p>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Autonomous AI testing has been stopped in accordance with QA ethics and platform policy. Automated challenge clicks, proxy rotation, and bot evasion techniques are strictly forbidden.
-                  </p>
                 </div>
 
+                {/* Prominent Activity State Banner (Section 67) */}
+                <div className={`p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-between gap-2 text-left ${
+                  agentStatus === 'READY_TO_RESUME' || canResume
+                    ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-200'
+                    : agentStatus === 'HUMAN_CONTROL_ACTIVE'
+                    ? 'bg-purple-950/60 border-purple-500/50 text-purple-200'
+                    : agentStatus === 'VERIFYING_PAGE_ACCESS' || isVerifyingPage
+                    ? 'bg-blue-950/60 border-blue-500/50 text-blue-200'
+                    : 'bg-amber-950/60 border-amber-500/50 text-amber-200'
+                }`}>
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-current animate-pulse"></span>
+                    <span>
+                      {agentStatus === 'READY_TO_RESUME' || canResume
+                        ? 'Application Ready! Verification confirmed. Safe to Resume AI Testing.'
+                        : agentStatus === 'HUMAN_CONTROL_ACTIVE'
+                        ? 'Human Control Active. Autonomous Playwright action scheduling is paused.'
+                        : agentStatus === 'VERIFYING_PAGE_ACCESS' || isVerifyingPage
+                        ? 'Checking page access and readiness in active browser session...'
+                        : agentStatus === 'BLOCKED_SITE_VERIFICATION'
+                        ? 'Verification still required. Security challenge remains detected.'
+                        : 'Challenge Detected. Waiting for human verification in Chromium browser.'}
+                    </span>
+                  </div>
+                  <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-black/40 border border-current">
+                    {agentStatus}
+                  </span>
+                </div>
+
+                {/* Step-by-Step Instructions Box (Section 38) */}
+                <div className="bg-black/40 border border-slate-800 rounded-xl p-3.5 text-left text-xs space-y-2">
+                  <div className="font-semibold text-slate-300 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
+                    <span>📋</span> Recommended Human Action Workflow
+                  </div>
+                  <ol className="list-decimal list-inside space-y-1 text-slate-300 text-[11px] leading-relaxed">
+                    <li>Click <b className="text-cyan-400">Open / Focus Testing Browser</b> to bring forward the real Chromium window.</li>
+                    <li>Complete the verification challenge manually in the Chromium window if permitted.</li>
+                    <li>Return here to Agent Studio and click <b className="text-blue-400">Check Page Again</b>.</li>
+                    <li>Once application readiness is verified, click <b className="text-emerald-400">Resume AI Testing</b> to continue on the same session.</li>
+                  </ol>
+                </div>
+
+                {/* Read-Only Diagnostic Screenshot Stream (Section 39 & 68) */}
                 {liveScreenshotBase64 && (
-                  <div className="my-2 border border-orange-500/30 rounded-lg overflow-hidden max-h-56 shadow-lg">
+                  <div className="border border-slate-800 rounded-lg overflow-hidden max-h-52 shadow-lg bg-black/60 relative">
+                    <div className="absolute top-2 left-2 bg-black/80 backdrop-blur-md border border-amber-500/40 text-[10px] font-mono px-2 py-0.5 rounded text-amber-300 flex items-center gap-1.5 z-10">
+                      <Camera className="w-3 h-3 text-amber-400" />
+                      <span>DIAGNOSTIC — Security Challenge (Read-Only Stream)</span>
+                    </div>
                     <img 
                       src={`data:image/jpeg;base64,${liveScreenshotBase64}`} 
                       alt="Diagnostic Challenge Screen"
-                      className="w-full h-auto object-contain max-h-52 bg-black"
+                      className="w-full h-auto object-contain max-h-48 bg-black opacity-90"
                     />
-                    <div className="bg-slate-900/90 py-1 px-2.5 text-[10px] font-mono text-orange-300 text-left border-t border-slate-800">
-                      Diagnostic Screenshot Captured (No Automated Bypass Attempted)
+                    <div className="bg-slate-900/90 py-1 px-3 text-[10px] font-mono text-slate-400 text-left border-t border-slate-800 flex justify-between">
+                      <span>Live Browser Session Preserved • No Automated Bypass Attempted</span>
+                      <span className="text-slate-500">Same Session Alive</span>
                     </div>
                   </div>
                 )}
 
-                <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-3">
+                {/* Action Buttons (Section 37, 63, 65, 66) */}
+                <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
+                  {/* Button 1: Focus Testing Browser */}
                   <button
-                    onClick={handleOpenTargetExternal}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-500 text-xs font-semibold text-white shadow-lg shadow-orange-600/30 transition-colors"
+                    onClick={handleFocusBrowser}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-xs font-semibold text-white shadow-lg shadow-cyan-600/20 transition-all"
+                    title="Bring forward the active Playwright Chromium browser"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" /> Open Website (Manual Solve / Inspection)
+                    <Monitor className="w-3.5 h-3.5" /> Open / Focus Testing Browser
                   </button>
+
+                  {/* Button 2: Check Page Again */}
+                  <button
+                    onClick={() => checkPageAgain().catch(() => {})}
+                    disabled={isVerifyingPage}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-xs font-semibold text-white shadow-lg shadow-blue-600/20 transition-all"
+                    title="Inspect the current page DOM to verify if security challenge has been completed"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isVerifyingPage ? 'animate-spin' : ''}`} />
+                    {isVerifyingPage ? 'Checking Page...' : 'Check Page Again'}
+                  </button>
+
+                  {/* Button 3: Safe Resume AI Testing */}
+                  <button
+                    onClick={handleResumeVerification}
+                    disabled={!canResume || resumingLoading || currentTask?.executionMode === 'MANUAL_ONLY'}
+                    className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white transition-all shadow-lg ${
+                      canResume && currentTask?.executionMode !== 'MANUAL_ONLY'
+                        ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/30'
+                        : 'bg-slate-800 border border-slate-700 text-slate-500 cursor-not-allowed opacity-60'
+                    }`}
+                    title={
+                      currentTask?.executionMode === 'MANUAL_ONLY'
+                        ? 'Task is designated as MANUAL_ONLY. Automated execution is restricted.'
+                        : canResume
+                        ? 'Resume autonomous testing on the existing browser session'
+                        : 'Application readiness must be confirmed via Check Page Again before resuming'
+                    }
+                  >
+                    <Play className="w-3.5 h-3.5 fill-white" />
+                    {resumingLoading ? 'Resuming...' : 'Resume AI Testing'}
+                  </button>
+
+                  {/* Button 4: Cancel Run */}
+                  <button
+                    onClick={stopRun}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-xs font-semibold text-rose-300 transition-colors"
+                  >
+                    <Square className="w-3 h-3 fill-rose-300" /> Cancel Run
+                  </button>
+                </div>
+
+                {/* Additional Guidance Note */}
+                <div className="text-[10px] text-slate-500 leading-normal">
+                  Note: Automated CAPTCHA solving, bot evasion scripts, and stealth plugins are strictly prohibited by platform policy. 
+                  Manual verification completed in the browser does not alter authorization scopes or artificially inflate passed functional tests.
                 </div>
               </div>
             ) : liveScreenshotBase64 ? (

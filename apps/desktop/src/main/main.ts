@@ -120,6 +120,34 @@ function createWindow() {
     return orchestrator.getRunLogs(runId);
   });
 
+  ipcMain.handle('run:focusBrowser', async (_, runId) => {
+    return orchestrator.focusTestingBrowser(runId);
+  });
+
+  ipcMain.handle('run:takeover', async (_, { runId, active, reason }: { runId: string; active: boolean; reason?: string }) => {
+    if (active) {
+      const res = await orchestrator.releaseControlToHuman(runId, reason);
+      await defaultMcpRuntimeService.handleHumanTakeover(true).catch(() => {});
+      return res;
+    } else {
+      const res = await orchestrator.reclaimControlFromHuman(runId);
+      await defaultMcpRuntimeService.handleHumanTakeover(false).catch(() => {});
+      return res;
+    }
+  });
+
+  ipcMain.handle('run:checkPage', async (_, runId) => {
+    return orchestrator.checkPageAgain(runId);
+  });
+
+  ipcMain.handle('run:resumeReadiness', async (_, runId) => {
+    return orchestrator.validateResumeReadiness(runId);
+  });
+
+  ipcMain.handle('run:resumeVerification', async (_, runId) => {
+    return orchestrator.resumeAfterHumanVerification(runId);
+  });
+
   // Windows-MCP Adapter
   ipcMain.handle('mcp:status', async () => {
     return defaultMcpRuntimeService.getWindowsMcpStatus();

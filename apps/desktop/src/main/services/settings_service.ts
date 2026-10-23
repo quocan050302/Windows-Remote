@@ -5,7 +5,8 @@ import type {
   ActiveAiRuntime,
   SettingsUpdateRequest,
   PublicSettingsResponse,
-  ExecutionMode
+  ExecutionMode,
+  BrowserLaunchMode
 } from '@test-io-agent/shared';
 import { AgentStudioDatabase } from '@test-io-agent/storage';
 import {
@@ -74,6 +75,8 @@ export class SettingsService {
       lastVerifiedAt: activeMeta.lastTestedAt
     };
 
+    const browserExecution = this.getBrowserExecutionConfig();
+
     return {
       activeProvider: activeMeta.id,
       activeRuntime,
@@ -83,7 +86,8 @@ export class SettingsService {
         strictMode: true,
         blockedExternalDomains: ['tester.test.io'],
         allowAutoExternalSubmit: false
-      }
+      },
+      browserExecution
     };
   }
 
@@ -324,7 +328,7 @@ export class SettingsService {
   }
 
   /**
-   * Updates general application settings (execution mode, ollama URL, etc.)
+   * Updates general application settings (execution mode, ollama URL, browser options, etc.)
    */
   public async updateSettings(req: SettingsUpdateRequest): Promise<PublicSettingsResponse> {
     if (req.activeProvider) {
@@ -339,6 +343,56 @@ export class SettingsService {
       this.db.setSetting('ollama_base_url', req.ollamaBaseUrl.trim());
     }
 
+    if (req.browserMode) {
+      this.db.setSetting('browser_mode', req.browserMode);
+    }
+
+    if (req.openVisibleChromium !== undefined) {
+      this.db.setSetting('open_visible_chromium', String(req.openVisibleChromium));
+    }
+
+    if (req.keepBrowserOpenDuringHumanReview !== undefined) {
+      this.db.setSetting('keep_browser_open_during_human_review', String(req.keepBrowserOpenDuringHumanReview));
+    }
+
+    if (req.browserViewport) {
+      this.db.setSetting('browser_viewport', JSON.stringify(req.browserViewport));
+    }
+
+    if (req.humanControlPolicy) {
+      this.db.setSetting('human_control_policy', req.humanControlPolicy);
+    }
+
     return this.getPublicSettings();
+  }
+
+  /**
+   * Retrieves browser execution preferences
+   */
+  public getBrowserExecutionConfig(): {
+    browserMode: BrowserLaunchMode;
+    openVisibleChromium: boolean;
+    keepBrowserOpenDuringHumanReview: boolean;
+    browserViewport: { width: number; height: number };
+    humanControlPolicy: 'strict' | 'relaxed';
+  } {
+    const browserMode = (this.db.getSetting('browser_mode') as BrowserLaunchMode) || 'VISIBLE_SUPERVISED';
+    const openVisibleChromium = this.db.getSetting('open_visible_chromium') !== 'false';
+    const keepBrowserOpenDuringHumanReview = this.db.getSetting('keep_browser_open_during_human_review') !== 'false';
+    const rawViewport = this.db.getSetting('browser_viewport');
+    let browserViewport = { width: 1280, height: 800 };
+    if (rawViewport) {
+      try {
+        browserViewport = JSON.parse(rawViewport);
+      } catch {}
+    }
+    const humanControlPolicy = (this.db.getSetting('human_control_policy') as 'strict' | 'relaxed') || 'strict';
+    return {
+      browserMode,
+      openVisibleChromium,
+      keepBrowserOpenDuringHumanReview,
+      browserViewport,
+      humanControlPolicy
+    };
   }
 }

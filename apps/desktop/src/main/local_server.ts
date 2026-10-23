@@ -268,6 +268,61 @@ export function createLocalApiServer(
         return;
       }
 
+      // Run: Focus Testing Browser
+      if (req.method === 'POST' && pathname === '/api/run/focus-browser') {
+        const body = await readBody();
+        const result = await orchestrator.focusTestingBrowser(body.runId);
+        sendJson(200, result);
+        return;
+      }
+
+      // Run: Unified Human Takeover (Release or Reclaim)
+      if (req.method === 'POST' && pathname === '/api/run/takeover') {
+        const body = await readBody();
+        const runId = body.runId;
+        const active = Boolean(body.active ?? true);
+        if (active) {
+          const res = await orchestrator.releaseControlToHuman(runId, body.reason);
+          // Also coordinate with Windows-MCP if connected
+          await defaultMcpRuntimeService.handleHumanTakeover(true).catch(() => {});
+          sendJson(200, res);
+        } else {
+          const res = await orchestrator.reclaimControlFromHuman(runId);
+          await defaultMcpRuntimeService.handleHumanTakeover(false).catch(() => {});
+          sendJson(200, res);
+        }
+        return;
+      }
+
+      // Run: Check Page Again (User observation check)
+      if (req.method === 'POST' && pathname === '/api/run/check-page') {
+        const body = await readBody();
+        const result = await orchestrator.checkPageAgain(body.runId);
+        sendJson(200, result);
+        return;
+      }
+
+      // Run: Resume Readiness
+      if (req.method === 'GET' && pathname.startsWith('/api/run/') && pathname.endsWith('/resume-readiness')) {
+        const parts = pathname.split('/');
+        const runId = parts[3];
+        const readiness = await orchestrator.validateResumeReadiness(runId);
+        sendJson(200, readiness);
+        return;
+      }
+
+      // Run: Resume After Human Verification
+      if (req.method === 'POST' && pathname === '/api/run/resume-verification') {
+        const body = await readBody();
+        try {
+          const resumed = await orchestrator.resumeAfterHumanVerification(body.runId);
+          sendJson(200, { success: resumed });
+        } catch (err: any) {
+          sendJson(400, { success: false, error: err.message || String(err) });
+        }
+        return;
+      }
+
       // MCP: Status
       if (req.method === 'GET' && pathname === '/api/mcp/status') {
         const status = await defaultMcpRuntimeService.getWindowsMcpStatus();

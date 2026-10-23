@@ -27,7 +27,8 @@ import {
   History,
   Calendar,
   ShieldCheck,
-  ShieldAlert
+  ShieldAlert,
+  Monitor
 } from 'lucide-react';
 import type {
   AiProviderId,
@@ -1217,6 +1218,118 @@ export const Settings: React.FC = () => {
               <div className="text-xs text-slate-400 leading-relaxed">{m.desc}</div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Browser Execution & Supervised Human Controls */}
+      <div className="glass-panel p-6 space-y-4 rounded-xl border border-slate-800">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2.5 text-base font-semibold text-white">
+            <Monitor className="w-5 h-5 text-cyan-400" /> Browser Execution & Supervised Human Controls
+          </div>
+          <span className="text-xs px-2.5 py-0.5 rounded-full bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 font-mono">
+            Playwright v1.50+ Visible Support
+          </span>
+        </div>
+
+        <p className="text-xs text-slate-400 leading-relaxed">
+          Configure how Playwright browser sessions are launched during test execution. 
+          For supervised tasks, a real visible Chromium browser window allows direct human verification when anti-bot challenges appear.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+          {[
+            {
+              id: 'VISIBLE_SUPERVISED',
+              title: 'Visible Chromium (Supervised)',
+              desc: 'Launches real headful browser window. Preserves session on security challenge for manual human verification.'
+            },
+            {
+              id: 'HEADLESS_AUTOMATION',
+              title: 'Headless Automation',
+              desc: 'Standard headless browser without UI. Stops execution if security verification is encountered.'
+            },
+            {
+              id: 'MANUAL_ONLY',
+              title: 'Manual Testing Only',
+              desc: 'Opens browser for human QA operator. Prohibits autonomous AI execution.'
+            }
+          ].map((mode) => {
+            const currentBrowserMode = settingsData?.browserExecution?.browserMode || 'VISIBLE_SUPERVISED';
+            const isSelected = currentBrowserMode === mode.id;
+
+            return (
+              <div
+                key={mode.id}
+                onClick={async () => {
+                  try {
+                    const res = await apiClient.updateSettings({
+                      browserExecution: {
+                        browserMode: mode.id as any
+                      }
+                    });
+                    if (res) fetchSettings();
+                  } catch (_) {}
+                }}
+                className={`p-4 rounded-xl border cursor-pointer transition-all ${
+                  isSelected
+                    ? 'bg-cyan-600/10 border-cyan-500 text-white shadow-lg shadow-cyan-500/10'
+                    : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:border-slate-700'
+                }`}
+              >
+                <div className="font-semibold text-sm text-white mb-1 flex items-center justify-between">
+                  <span>{mode.title}</span>
+                  {isSelected && <span className="w-2 h-2 rounded-full bg-cyan-400"></span>}
+                </div>
+                <div className="text-xs text-slate-400 leading-relaxed">{mode.desc}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="space-y-3 text-sm text-slate-300 pt-3 border-t border-slate-800/80">
+          <div className="flex justify-between items-center py-2 border-b border-slate-800">
+            <div>
+              <div className="font-medium text-white">Keep Browser Open During Human Review</div>
+              <div className="text-xs text-slate-500">Maintains active Playwright context and page alive while waiting for human decision</div>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settingsData?.browserExecution?.keepBrowserOpenDuringHumanReview !== false}
+                onChange={async (e) => {
+                  await apiClient.updateSettings({
+                    browserExecution: {
+                      keepBrowserOpenDuringHumanReview: e.target.checked
+                    }
+                  });
+                  fetchSettings();
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-cyan-600"></div>
+            </label>
+          </div>
+
+          <div className="flex justify-between items-center py-2 border-b border-slate-800">
+            <div>
+              <div className="font-medium text-white">Human Control Policy</div>
+              <div className="text-xs text-slate-500">When security challenges appear, pause action loop and yield control to human operator</div>
+            </div>
+            <span className="text-xs font-mono font-semibold text-emerald-400 px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/20">
+              PAUSE_AND_AWAIT_DECISION
+            </span>
+          </div>
+
+          <div className="flex justify-between items-center py-2">
+            <div>
+              <div className="font-medium text-white">Browser Viewport Dimensions</div>
+              <div className="text-xs text-slate-500">Standard test viewport for desktop web applications</div>
+            </div>
+            <span className="font-mono bg-slate-900 px-3 py-1 rounded border border-slate-700 text-slate-300 text-xs">
+              {settingsData?.browserExecution?.browserViewport || '1280x800'}
+            </span>
+          </div>
         </div>
       </div>
 

@@ -63,15 +63,26 @@ const CHALLENGE_HTML = `<!DOCTYPE html>
     <h2>Checking if the site connection is secure</h2>
     <p>Enable JavaScript and cookies to continue</p>
     <div id="challenge-form" class="cf-turnstile" data-translate="turnstile">
-      <input type="checkbox" id="cf-turnstile-checkbox" style="margin-right: 0.5rem;" />
-      <label for="cf-turnstile-checkbox">Verify you are human</label>
+      <input type="checkbox" id="cf-turnstile-checkbox" style="margin-right: 0.5rem; cursor: pointer;" onchange="handleSolve()" />
+      <label for="cf-turnstile-checkbox" style="cursor: pointer;">Verify you are human</label>
     </div>
-    <p style="font-size: 0.85rem; color: #666;">This process is automatic. Your browser will redirect to your requested content shortly.</p>
+    <div style="margin-top: 15px;">
+      <button id="btn-solve-challenge" style="background: #0051c3; color: white; border: none; padding: 10px 20px; border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;" onclick="handleSolve()">
+        Complete Manual Verification
+      </button>
+    </div>
+    <p style="font-size: 0.85rem; color: #666; margin-top: 15px;">This process is automatic. Your browser will redirect to your requested content shortly.</p>
     <div class="footer">
       <div>Ray ID: 8e5a7bc12d8a9f01</div>
       <div>Performance & security by Cloudflare</div>
     </div>
   </div>
+  <script>
+    function handleSolve() {
+      document.cookie = "cf_clearance=test_token_verified; path=/; max-age=3600";
+      window.location.href = "/?verified=true";
+    }
+  </script>
 </body>
 </html>`;
 
@@ -81,8 +92,24 @@ export const server = http.createServer((req, res) => {
 
   // Cloudflare / Security challenge simulation route
   if (pathname === '/challenge' || pathname === '/cloudflare' || pathname === '/security-check') {
+    const cookies = req.headers.cookie || '';
+    if (cookies.includes('cf_clearance=test_token_verified') || parsedUrl.searchParams.get('solved') === 'true') {
+      res.writeHead(302, { 'Location': '/?verified=true' });
+      res.end();
+      return;
+    }
     res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(CHALLENGE_HTML);
+    return;
+  }
+
+  // Challenge reset endpoint
+  if (pathname === '/api/challenge/reset') {
+    res.writeHead(200, {
+      'Set-Cookie': 'cf_clearance=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT',
+      'Content-Type': 'application/json'
+    });
+    res.end(JSON.stringify({ success: true, message: 'Challenge reset' }));
     return;
   }
 

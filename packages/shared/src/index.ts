@@ -7,12 +7,21 @@
 // 1. Task, Lifecycle & Execution State
 // ==========================================
 
-export type ExecutionMode = 'COPILOT_MODE' | 'SUPERVISED_MODE' | 'AUTHORIZED_AUTO_MODE';
+export type ExecutionMode = 'COPILOT_MODE' | 'SUPERVISED_MODE' | 'AUTHORIZED_AUTO_MODE' | 'MANUAL_ONLY';
+
+export type BrowserLaunchMode = 'HEADLESS_AUTOMATION' | 'VISIBLE_SUPERVISED' | 'MANUAL_ONLY';
+
+export type ControlOwnership = 'AI_PLAYWRIGHT' | 'HUMAN' | 'NONE';
 
 export type RunStatus =
   | 'READY'
   | 'RUNNING'
   | 'PAUSED'
+  | 'AWAITING_HUMAN_VERIFICATION'
+  | 'HUMAN_CONTROL_ACTIVE'
+  | 'VERIFYING_PAGE_ACCESS'
+  | 'READY_TO_RESUME'
+  | 'MANUAL_ONLY'
   | 'COMPLETED'
   | 'COMPLETED_WITH_FINDINGS'
   | 'PARTIAL'
@@ -30,6 +39,10 @@ export type TaskStatus =
   | 'READY'
   | 'RUNNING'
   | 'PAUSED'
+  | 'AWAITING_HUMAN_VERIFICATION'
+  | 'HUMAN_CONTROL_ACTIVE'
+  | 'READY_TO_RESUME'
+  | 'MANUAL_ONLY'
   | 'BLOCKED'
   | 'BLOCKED_SITE_VERIFICATION'
   | 'BLOCKED_AUTHORIZATION'
@@ -428,6 +441,8 @@ export interface BrowserSessionOptions {
   headless?: boolean;
   viewport?: { width: number; height: number };
   userAgent?: string;
+  launchMode?: BrowserLaunchMode;
+  runId?: string;
 }
 
 export interface BrowserSession {
@@ -438,6 +453,41 @@ export interface BrowserSession {
   authorizationId?: string;
   startTime: string;
   isClosed: boolean;
+  runId?: string;
+  launchMode?: BrowserLaunchMode;
+  isHeadless?: boolean;
+}
+
+export interface ResumeReadinessResult {
+  canResume: boolean;
+  pageReady: boolean;
+  authorizationValid: boolean;
+  sessionAlive: boolean;
+  reason: string;
+  requiredUserAction?: string;
+  detectedState?: PageAccessState;
+  currentUrl?: string;
+  remainingBlocker?: string;
+}
+
+export interface CheckPageResult {
+  runId: string;
+  sessionId?: string;
+  accessState: PageAccessState;
+  isBlocked: boolean;
+  isReady: boolean;
+  blockerReason?: string;
+  currentUrl: string;
+  pageTitle: string;
+  canResume: boolean;
+  timestamp: string;
+}
+
+export interface BrowserFocusResult {
+  sessionId: string;
+  broughtToFront: boolean;
+  windowIdentifier?: string;
+  message: string;
 }
 
 export interface BrowserPage {
@@ -646,6 +696,11 @@ export interface ApplicationSettings {
   screenshotResolution: 'high' | 'medium' | 'low';
   loggingLevel: 'debug' | 'info' | 'warn' | 'error';
   theme: 'dark' | 'light' | 'system';
+  browserMode?: BrowserLaunchMode;
+  openVisibleChromium?: boolean;
+  keepBrowserOpenDuringHumanReview?: boolean;
+  browserViewport?: { width: number; height: number };
+  humanControlPolicy?: 'strict' | 'relaxed';
 }
 
 export interface ModelUsageRecord {
@@ -726,6 +781,11 @@ export interface SettingsUpdateRequest {
   activeProvider?: AiProviderId;
   defaultExecutionMode?: ExecutionMode;
   ollamaBaseUrl?: string;
+  browserMode?: BrowserLaunchMode;
+  openVisibleChromium?: boolean;
+  keepBrowserOpenDuringHumanReview?: boolean;
+  browserViewport?: { width: number; height: number };
+  humanControlPolicy?: 'strict' | 'relaxed';
 }
 
 export interface PublicSettingsResponse {
@@ -737,6 +797,13 @@ export interface PublicSettingsResponse {
     strictMode: boolean;
     blockedExternalDomains: string[];
     allowAutoExternalSubmit: boolean;
+  };
+  browserExecution?: {
+    browserMode: BrowserLaunchMode;
+    openVisibleChromium: boolean;
+    keepBrowserOpenDuringHumanReview: boolean;
+    browserViewport: { width: number; height: number };
+    humanControlPolicy: 'strict' | 'relaxed';
   };
 }
 

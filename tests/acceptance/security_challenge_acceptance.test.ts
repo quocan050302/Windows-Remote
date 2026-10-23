@@ -52,7 +52,7 @@ test('Acceptance: Security Challenge Handling (Cloudflare / Turnstile Block)', a
       targetUrl: challengeUrl,
       sourcePlatform: 'TEST_IO_IMPORT',
       status: 'READY' as const,
-      executionMode: 'COPILOT_MODE' as const,
+      executionMode: 'AUTHORIZED_AUTO_MODE' as const,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -63,6 +63,7 @@ test('Acceptance: Security Challenge Handling (Cloudflare / Turnstile Block)', a
       targetUrl: challengeUrl,
       taskId: challengeTask.id,
       authorizationId: auth.id,
+      allowHumanVerification: false,
       maxSteps: 5
     });
 
@@ -97,5 +98,8 @@ test('Acceptance: Security Challenge Handling (Cloudflare / Turnstile Block)', a
 
   } finally {
     db.close();
+    if (demoServer.listening) {
+      demoServer.close();
+    }
   }
 });

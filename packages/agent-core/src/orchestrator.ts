@@ -19,7 +19,13 @@ import type {
   StepVerificationStatus,
   RequirementsCoverageMatrix,
   TestRequirementItem,
-  PageObservation
+  PageObservation,
+  ControlOwnership,
+  BrowserLaunchMode,
+  ResumeReadinessResult,
+  CheckPageResult,
+  BrowserFocusResult,
+  AccessBlockerResult
 } from '@test-io-agent/shared';
 import type { AgentStudioDatabase } from '@test-io-agent/storage';
 import { AuditLogService, checkActionPermission } from '@test-io-agent/policy-engine';
@@ -51,6 +57,7 @@ export interface ActiveRunState {
   targetUrl: string;
   isPaused: boolean;
   pausePromiseResolve?: () => void;
+  humanDecisionResolve?: (action: 'RESUME' | 'CANCEL' | 'BROWSER_CLOSED') => void;
   abortController: AbortController;
   activeBrowserSessionId?: string;
   latestScreenshotBase64?: string;
@@ -62,6 +69,9 @@ export interface ActiveRunState {
   providerUsed?: string;
   modelUsed?: string;
   coverageMatrix?: RequirementsCoverageMatrix;
+  controlOwnership?: ControlOwnership;
+  browserMode?: BrowserLaunchMode;
+  canResume?: boolean;
 }
 
 export class AgentOrchestrator {
@@ -92,6 +102,10 @@ export class AgentOrchestrator {
 
   public getRuntimeManager(): AiRuntimeManager {
     return this.runtimeManager;
+  }
+
+  public getBrowserManager(): BrowserSessionManager {
+    return this.browserManager;
   }
 
   public setAiProvider(providerType: string, config?: any): void {
@@ -147,9 +161,10 @@ export class AgentOrchestrator {
 
   public async pauseRun(runId: string): Promise<boolean> {
     const run = this.activeRuns.get(runId);
-    if (!run || run.status !== 'RUNNING') return false;
+    if (!run) return false;
 
     run.isPaused = true;
+    run.controlOwnership = 'HUMAN';
     run.status = 'PAUSED';
     run.logs.push(`[${new Date().toLocaleTimeString()}] PAUSE: Agent execution paused by user.`);
     this.db.updateRun({
@@ -166,7 +181,18 @@ export class AgentOrchestrator {
 
   public async resumeRun(runId: string): Promise<boolean> {
     const run = this.activeRuns.get(runId);
-    if (!run || run.status !== 'PAUSED') return false;
+    if (!run) return false;
+
+    // Check if resuming from human verification
+    if (
+      run.status === 'AWAITING_HUMAN_VERIFICATION' ||
+      run.status === 'HUMAN_CONTROL_ACTIVE' ||
+      run.status === 'READY_TO_RESUME'
+    ) {
+      return this.resumeAfterHumanVerification(runId);
+    }
+
+    if (run.status !== 'PAUSED') return false;
 
     // Verify authorization is still active before resuming
     const parsed = new URL(run.targetUrl);
@@ -177,6 +203,7 @@ export class AgentOrchestrator {
     }
 
     run.isPaused = false;
+    run.controlOwnership = 'AI_PLAYWRIGHT';
     run.status = 'RUNNING';
     run.logs.push(`[${new Date().toLocaleTimeString()}] RESUME: Agent execution resumed.`);
     this.db.updateRun({
@@ -197,6 +224,482 @@ export class AgentOrchestrator {
   }
 
   /**
+   * Focus the real Chromium browser window for the human operator
+   */
+  public async focusTestingBrowser(runId: string): Promise<BrowserFocusResult> {
+    const run = this.activeRuns.get(runId);
+    const sessionId = run?.activeBrowserSessionId;
+    if (!sessionId) {
+      return {
+        sessionId: '',
+        broughtToFront: false,
+        message: 'No active browser session associated with this run.'
+      };
+    }
+    return this.browserManager.focusTestingBrowser(sessionId);
+  }
+
+  /**
+   * Release control to the human operator (Human Takeover)
+   */
+  public async releaseControlToHuman(
+    runId: string,
+    reason?: string
+  ): Promise<{ success: boolean; ownership: ControlOwnership }> {
+    const run = this.activeRuns.get(runId);
+    if (!run) {
+      return { success: false, ownership: 'NONE' };
+    }
+
+    run.isPaused = true;
+    run.controlOwnership = 'HUMAN';
+    run.status = 'HUMAN_CONTROL_ACTIVE';
+    run.logs.push(
+      `[${new Date().toLocaleTimeString()}] HUMAN TAKEOVER: ${reason ? `${reason}. ` : ''}Automated Playwright actions suspended. Human operator has exclusive control.`
+    );
+
+    this.db.updateRun({
+      id: runId,
+      status: 'HUMAN_CONTROL_ACTIVE',
+      totalSteps: run.totalSteps,
+      passedSteps: run.currentStep,
+      failedSteps: run.candidateBugs.length,
+      bugsFound: run.candidateBugs.length
+    });
+
+    if (run.activeBrowserSessionId) {
+      await this.browserManager.focusTestingBrowser(run.activeBrowserSessionId).catch(() => {});
+    }
+
+    return { success: true, ownership: 'HUMAN' };
+  }
+
+  /**
+   * Reclaim control from the human operator
+   */
+  public async reclaimControlFromHuman(runId: string): Promise<{ success: boolean; ownership: ControlOwnership }> {
+    const run = this.activeRuns.get(runId);
+    if (!run) {
+      return { success: false, ownership: 'NONE' };
+    }
+
+    run.controlOwnership = 'AI_PLAYWRIGHT';
+    run.isPaused = false;
+    run.status = 'RUNNING';
+    run.logs.push(`[${new Date().toLocaleTimeString()}] AI Playwright control reclaimed.`);
+
+    this.db.updateRun({
+      id: runId,
+      status: 'RUNNING',
+      totalSteps: run.totalSteps,
+      passedSteps: run.currentStep,
+      failedSteps: run.candidateBugs.length,
+      bugsFound: run.candidateBugs.length
+    });
+
+    return { success: true, ownership: 'AI_PLAYWRIGHT' };
+  }
+
+  /**
+   * Handles security challenges (Cloudflare Turnstile, CAPTCHA, etc.)
+   */
+  public async handleSecurityChallenge(
+    runId: string,
+    sessionId: string,
+    blocker: AccessBlockerResult,
+    options?: {
+      isSupervised?: boolean;
+      initialScreenshot?: Buffer;
+    }
+  ): Promise<'AWAITING_HUMAN_VERIFICATION' | 'BLOCKED_SITE_VERIFICATION'> {
+    const runState = this.activeRuns.get(runId);
+    if (!runState) return 'BLOCKED_SITE_VERIFICATION';
+
+    runState.activeStepGoal = undefined;
+    runState.error = blocker.diagnosticDetails;
+    runState.blockerReason = blocker.diagnosticDetails;
+
+    runState.logs.push(
+      `[${new Date().toLocaleTimeString()}] SECURITY CHALLENGE DETECTED: ${blocker.diagnosticDetails}`
+    );
+    for (const sig of blocker.signalsDetected) {
+      runState.logs.push(`[${new Date().toLocaleTimeString()}] DIAGNOSTIC SIGNAL: ${sig}`);
+    }
+
+    if (options?.initialScreenshot) {
+      const diagEvidence = await this.evidenceService.captureEvidence(runId, {
+        type: 'SCREENSHOT',
+        content: options.initialScreenshot,
+        filenamePrefix: 'diagnostic_security_challenge',
+        category: 'DIAGNOSTIC'
+      });
+      runState.evidence.push(diagEvidence);
+    }
+
+    const isSupervised = options?.isSupervised ?? true;
+    if (!isSupervised) {
+      runState.status = 'BLOCKED_SITE_VERIFICATION';
+      this.db.updateRun({
+        id: runId,
+        status: 'BLOCKED_SITE_VERIFICATION',
+        totalSteps: 0,
+        passedSteps: 0,
+        failedSteps: 0,
+        bugsFound: 0,
+        endTime: new Date().toISOString()
+      });
+      return 'BLOCKED_SITE_VERIFICATION';
+    }
+
+    runState.status = 'AWAITING_HUMAN_VERIFICATION';
+    runState.isPaused = true;
+    runState.controlOwnership = 'HUMAN';
+    runState.canResume = false;
+    runState.logs.push(
+      `[${new Date().toLocaleTimeString()}] AWAITING_HUMAN_VERIFICATION: Automated testing paused. Please solve verification challenge in the Chromium window.`
+    );
+
+    this.db.updateRun({
+      id: runId,
+      status: 'AWAITING_HUMAN_VERIFICATION',
+      totalSteps: runState.totalSteps,
+      passedSteps: 0,
+      failedSteps: 0,
+      bugsFound: 0
+    });
+
+    await this.browserManager.focusTestingBrowser(sessionId).catch(() => {});
+    return 'AWAITING_HUMAN_VERIFICATION';
+  }
+
+  /**
+   * Suspends execution loop while awaiting human interaction
+   */
+  public async awaitHumanDecision(
+    runId: string,
+    abortSignal?: AbortSignal,
+    timeoutMs?: number
+  ): Promise<'RESUME' | 'CANCEL' | 'BROWSER_CLOSED'> {
+    const runState = this.activeRuns.get(runId);
+    if (!runState) return 'CANCEL';
+
+    return new Promise<'RESUME' | 'CANCEL' | 'BROWSER_CLOSED'>((resolve) => {
+      let resolved = false;
+      let timer: NodeJS.Timeout | null = null;
+
+      const finish = (result: 'RESUME' | 'CANCEL' | 'BROWSER_CLOSED') => {
+        if (resolved) return;
+        resolved = true;
+        if (timer) clearTimeout(timer);
+        runState.humanDecisionResolve = undefined;
+        resolve(result);
+      };
+
+      runState.humanDecisionResolve = (action) => finish(action);
+
+      if (abortSignal) {
+        if (abortSignal.aborted) {
+          return finish('CANCEL');
+        }
+        abortSignal.addEventListener('abort', () => finish('CANCEL'), { once: true });
+      }
+
+      if (runState.activeBrowserSessionId) {
+        if (!this.browserManager.isSessionAlive(runState.activeBrowserSessionId)) {
+          return finish('BROWSER_CLOSED');
+        }
+      }
+
+      if (timeoutMs && timeoutMs > 0) {
+        timer = setTimeout(() => {
+          finish('CANCEL');
+        }, timeoutMs);
+      }
+    });
+  }
+
+  /**
+   * Inspects current browser page to check if human verification was completed
+   */
+  public async checkPageAgain(runId: string): Promise<CheckPageResult> {
+    const runState = this.activeRuns.get(runId);
+    if (!runState) {
+      throw new Error(`Run '${runId}' not found or not active.`);
+    }
+
+    if (!runState.activeBrowserSessionId) {
+      throw new Error(`Run '${runId}' has no active browser session.`);
+    }
+
+    const sessionAlive = this.browserManager.isSessionAlive(runState.activeBrowserSessionId);
+    if (!sessionAlive) {
+      runState.status = 'FAILED';
+      runState.error = 'Browser session closed by user';
+      return {
+        runId,
+        sessionId: runState.activeBrowserSessionId,
+        accessState: 'NETWORK_FAILURE',
+        isBlocked: true,
+        isReady: false,
+        blockerReason: 'Browser session closed by user',
+        currentUrl: runState.targetUrl,
+        pageTitle: '',
+        canResume: false,
+        timestamp: new Date().toISOString()
+      };
+    }
+
+    const firstPage = this.browserManager.getSessionFirstPage(runState.activeBrowserSessionId);
+    if (!firstPage) {
+      throw new Error(`No active page found in browser session '${runState.activeBrowserSessionId}'.`);
+    }
+
+    // Capture fresh live screenshot for observation viewer
+    const screenshotBuf = await this.browserManager.capturePageScreenshot(firstPage.pageId);
+    runState.latestScreenshotBase64 = screenshotBuf.toString('base64');
+
+    // Inspect current DOM
+    const observation = await this.browserManager.inspectWebPage(firstPage.pageId);
+    const blocker = detectAccessBlocker(observation);
+
+    if (blocker) {
+      runState.status = 'AWAITING_HUMAN_VERIFICATION';
+      runState.canResume = false;
+      runState.blockerReason = blocker.diagnosticDetails;
+      runState.logs.push(
+        `[${new Date().toLocaleTimeString()}] Verification check: Challenge still present (${blocker.diagnosticDetails}).`
+      );
+
+      return {
+        runId,
+        sessionId: runState.activeBrowserSessionId,
+        accessState: blocker.accessState,
+        isBlocked: true,
+        isReady: false,
+        blockerReason: blocker.diagnosticDetails,
+        currentUrl: observation.currentUrl,
+        pageTitle: observation.title,
+        canResume: false,
+        timestamp: new Date().toISOString()
+      };
+    }
+
+    // Check application readiness
+    const readiness = verifyApplicationReady(observation);
+    if (!readiness.isReady) {
+      runState.canResume = false;
+      runState.logs.push(
+        `[${new Date().toLocaleTimeString()}] Verification check: Page content not ready (${readiness.reason}).`
+      );
+
+      return {
+        runId,
+        sessionId: runState.activeBrowserSessionId,
+        accessState: readiness.detectedState,
+        isBlocked: false,
+        isReady: false,
+        blockerReason: readiness.reason,
+        currentUrl: observation.currentUrl,
+        pageTitle: observation.title,
+        canResume: false,
+        timestamp: new Date().toISOString()
+      };
+    }
+
+    // Recheck authorization validity
+    const authEval = this.db.evaluateTargetAuthorization(observation.currentUrl);
+    if (!authEval.authorized || !authEval.authorization) {
+      runState.canResume = false;
+      runState.logs.push(
+        `[${new Date().toLocaleTimeString()}] Verification check: URL out of authorized scope (${authEval.reason}).`
+      );
+
+      return {
+        runId,
+        sessionId: runState.activeBrowserSessionId,
+        accessState: 'ACCESS_DENIED',
+        isBlocked: true,
+        isReady: false,
+        blockerReason: authEval.reason,
+        currentUrl: observation.currentUrl,
+        pageTitle: observation.title,
+        canResume: false,
+        timestamp: new Date().toISOString()
+      };
+    }
+
+    // Access confirmed! Application is ready!
+    runState.status = 'READY_TO_RESUME';
+    runState.canResume = true;
+    runState.blockerReason = undefined;
+    runState.logs.push(
+      `[${new Date().toLocaleTimeString()}] Human verification confirmed! Application page is ready. You may now Resume AI Testing.`
+    );
+
+    this.db.updateRun({
+      id: runId,
+      status: 'READY_TO_RESUME',
+      totalSteps: runState.totalSteps,
+      passedSteps: runState.currentStep,
+      failedSteps: runState.candidateBugs.length
+    });
+
+    return {
+      runId,
+      sessionId: runState.activeBrowserSessionId,
+      accessState: 'NORMAL_APPLICATION_PAGE',
+      isBlocked: false,
+      isReady: true,
+      currentUrl: observation.currentUrl,
+      pageTitle: observation.title,
+      canResume: true,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Validates if the run is eligible and ready to resume autonomous execution
+   */
+  public async validateResumeReadiness(runId: string): Promise<ResumeReadinessResult> {
+    const runState = this.activeRuns.get(runId);
+    if (!runState) {
+      return {
+        canResume: false,
+        pageReady: false,
+        authorizationValid: false,
+        sessionAlive: false,
+        reason: `Run '${runId}' is not active.`
+      };
+    }
+
+    if (!runState.activeBrowserSessionId) {
+      return {
+        canResume: false,
+        pageReady: false,
+        authorizationValid: false,
+        sessionAlive: false,
+        reason: 'No active browser session.'
+      };
+    }
+
+    const sessionAlive = this.browserManager.isSessionAlive(runState.activeBrowserSessionId);
+    if (!sessionAlive) {
+      return {
+        canResume: false,
+        pageReady: false,
+        authorizationValid: false,
+        sessionAlive: false,
+        reason: 'Browser session closed by user.',
+        requiredUserAction: 'Start a new test run.'
+      };
+    }
+
+    const task = this.db.getTask(runState.taskId);
+    if (task && (task.executionMode === 'MANUAL_ONLY' || task.analysis?.taskType === 'MOBILE_MANUAL_ASSISTED')) {
+      return {
+        canResume: false,
+        pageReady: true,
+        authorizationValid: true,
+        sessionAlive: true,
+        reason: 'Task is designated as MANUAL_ONLY. Automated execution is restricted.',
+        requiredUserAction: 'Proceed with manual testing and report drafting.'
+      };
+    }
+
+    const firstPage = this.browserManager.getSessionFirstPage(runState.activeBrowserSessionId);
+    if (!firstPage) {
+      return {
+        canResume: false,
+        pageReady: false,
+        authorizationValid: false,
+        sessionAlive: true,
+        reason: 'No active page found in browser session.'
+      };
+    }
+
+    const obs = await this.browserManager.inspectWebPage(firstPage.pageId);
+    const blocker = detectAccessBlocker(obs);
+    if (blocker) {
+      return {
+        canResume: false,
+        pageReady: false,
+        authorizationValid: true,
+        sessionAlive: true,
+        reason: blocker.diagnosticDetails,
+        remainingBlocker: blocker.diagnosticDetails,
+        requiredUserAction: 'Complete the security verification in the Chromium window and click Check Page Again.'
+      };
+    }
+
+    const ready = verifyApplicationReady(obs);
+    if (!ready.isReady) {
+      return {
+        canResume: false,
+        pageReady: false,
+        authorizationValid: true,
+        sessionAlive: true,
+        reason: ready.reason,
+        requiredUserAction: 'Ensure the application page has loaded.'
+      };
+    }
+
+    const authEval = this.db.evaluateTargetAuthorization(obs.currentUrl);
+    if (!authEval.authorized) {
+      return {
+        canResume: false,
+        pageReady: true,
+        authorizationValid: false,
+        sessionAlive: true,
+        reason: authEval.reason || 'Target URL is not authorized for autonomous execution.'
+      };
+    }
+
+    return {
+      canResume: true,
+      pageReady: true,
+      authorizationValid: true,
+      sessionAlive: true,
+      reason: 'Application page is ready and authorized for resumed execution.',
+      currentUrl: obs.currentUrl
+    };
+  }
+
+  /**
+   * Resumes autonomous execution after human verification
+   */
+  public async resumeAfterHumanVerification(runId: string): Promise<boolean> {
+    const readiness = await this.validateResumeReadiness(runId);
+    if (!readiness.canResume) {
+      throw new Error(`Cannot resume: ${readiness.reason}`);
+    }
+
+    const runState = this.activeRuns.get(runId);
+    if (!runState) return false;
+
+    runState.status = 'RUNNING';
+    runState.isPaused = false;
+    runState.controlOwnership = 'AI_PLAYWRIGHT';
+    runState.logs.push(
+      `[${new Date().toLocaleTimeString()}] Resuming autonomous execution on the existing browser session.`
+    );
+
+    this.db.updateRun({
+      id: runId,
+      status: 'RUNNING',
+      totalSteps: runState.totalSteps,
+      passedSteps: runState.currentStep,
+      failedSteps: runState.candidateBugs.length
+    });
+
+    if (runState.humanDecisionResolve) {
+      runState.humanDecisionResolve('RESUME');
+      runState.humanDecisionResolve = undefined;
+    }
+
+    return true;
+  }
+
+  /**
    * Analyze Task input and detect scope, requirements and missing info
    * Contract: analyzeTask(input): Promise<TaskAnalysis>
    */
@@ -210,21 +713,23 @@ export class AgentOrchestrator {
       description: input.description
     });
 
-    // Save or update task in DB
+    // Save or update task in DB, preserving existing executionMode
     const taskId = input.id || `task_${Date.now()}`;
     analysis.taskId = taskId;
+    const existing = this.db.getTask(taskId);
+
     const taskRecord: TaskRecord = {
       id: taskId,
       title: input.title,
       description: input.description,
-      sourcePlatform: input.sourcePlatform || 'TEST_IO',
-      targetUrl: input.targetUrl,
-      targetApp: input.targetApp,
-      cycleId: input.cycleId,
-      status: analysis.missingInformation.length > 0 ? 'NEEDS_REVIEW' : 'READY',
-      executionMode: 'COPILOT_MODE',
+      sourcePlatform: input.sourcePlatform || existing?.sourcePlatform || 'TEST_IO',
+      targetUrl: input.targetUrl || existing?.targetUrl,
+      targetApp: input.targetApp || existing?.targetApp,
+      cycleId: input.cycleId || existing?.cycleId,
+      status: existing?.status || (analysis.missingInformation.length > 0 ? 'NEEDS_REVIEW' : 'READY'),
+      executionMode: existing?.executionMode || 'COPILOT_MODE',
       analysis,
-      createdAt: new Date().toISOString(),
+      createdAt: existing?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
 
@@ -305,6 +810,9 @@ export class AgentOrchestrator {
     authorizationId?: string;
     runId?: string;
     maxSteps?: number;
+    browserMode?: BrowserLaunchMode;
+    headless?: boolean;
+    allowHumanVerification?: boolean;
   }): Promise<RunResult> {
     const runId = options.runId || `run_${Date.now()}`;
     return this.executeAgentLoop(runId, undefined, options);
@@ -322,6 +830,9 @@ export class AgentOrchestrator {
       maxSteps?: number;
       taskId?: string;
       authorizationId?: string;
+      browserMode?: BrowserLaunchMode;
+      headless?: boolean;
+      allowHumanVerification?: boolean;
     }
   ): Promise<RunResult> {
     const startTime = Date.now();
@@ -481,11 +992,39 @@ export class AgentOrchestrator {
       );
 
       // 5. Initialize Browser Session
-      activeBrowserSession = await this.browserManager.createBrowserSession(
-        { headless: true },
-        auth
-      );
+      const browserModeSetting = this.db.getSetting('browser_mode');
+      const openVisibleSetting = this.db.getSetting('open_visible_chromium');
+
+      let isVisible = false;
+      if (options?.browserMode === 'VISIBLE_SUPERVISED' || options?.browserMode === 'MANUAL_ONLY' || options?.headless === false) {
+        isVisible = true;
+      } else if (options?.browserMode === 'HEADLESS_AUTOMATION' || options?.headless === true) {
+        isVisible = false;
+      } else if (openVisibleSetting === 'true' || browserModeSetting === 'VISIBLE_SUPERVISED') {
+        isVisible = true;
+      } else if (task.executionMode === 'SUPERVISED_MODE' || task.executionMode === 'COPILOT_MODE' || task.executionMode === 'MANUAL_ONLY') {
+        isVisible = true;
+      } else {
+        isVisible = false;
+      }
+
+      const launchMode: BrowserLaunchMode = task.executionMode === 'MANUAL_ONLY' || options?.browserMode === 'MANUAL_ONLY'
+        ? 'MANUAL_ONLY'
+        : isVisible ? 'VISIBLE_SUPERVISED' : 'HEADLESS_AUTOMATION';
+
+      if (isVisible) {
+        activeBrowserSession = await this.browserManager.createVisibleBrowserSession(
+          { headless: false, launchMode, runId },
+          auth
+        );
+      } else {
+        activeBrowserSession = await this.browserManager.createBrowserSession(
+          { headless: true, launchMode, runId },
+          auth
+        );
+      }
       runState.activeBrowserSessionId = activeBrowserSession.sessionId;
+      runState.browserMode = launchMode;
 
       // Open initial authorized tab
       activePage = await this.browserManager.openAuthorizedTab(
@@ -504,64 +1043,140 @@ export class AgentOrchestrator {
         'SUCCESS',
         { taskId, runId, targetDomain }
       );
-      runState.logs.push(`[${new Date().toLocaleTimeString()}] Opened authorized browser tab for ${targetUrl}`);
+      runState.logs.push(
+        `[${new Date().toLocaleTimeString()}] Opened authorized browser tab for ${targetUrl} (${isVisible ? 'Visible Chromium' : 'Headless'})`
+      );
 
       // Inspect initial observation
-      const initialObservation = await this.browserManager.inspectWebPage(activePage.pageId);
+      let activeObservation = await this.browserManager.inspectWebPage(activePage.pageId);
 
       // 6. Security Blocker & Cloudflare Challenge Check
-      const accessBlocker = detectAccessBlocker(initialObservation);
+      const accessBlocker = detectAccessBlocker(activeObservation);
       if (accessBlocker) {
-        runState.status = accessBlocker.recommendedRunStatus;
-        runState.error = accessBlocker.diagnosticDetails;
-        runState.blockerReason = accessBlocker.diagnosticDetails;
-        runState.activeStepGoal = undefined;
+        const canSupervise =
+          options?.allowHumanVerification !== false &&
+          isVisible &&
+          (task.executionMode === 'COPILOT_MODE' ||
+            task.executionMode === 'SUPERVISED_MODE' ||
+            task.executionMode === 'MANUAL_ONLY' ||
+            options?.browserMode === 'VISIBLE_SUPERVISED' ||
+            options?.browserMode === 'MANUAL_ONLY');
 
-        runState.logs.push(
-          `[${new Date().toLocaleTimeString()}] ${accessBlocker.recommendedRunStatus}: ${accessBlocker.diagnosticDetails}`
-        );
-        for (const sig of accessBlocker.signalsDetected) {
-          runState.logs.push(`[${new Date().toLocaleTimeString()}] DIAGNOSTIC SIGNAL: ${sig}`);
+        if (!canSupervise) {
+          runState.status = accessBlocker.recommendedRunStatus;
+          runState.error = accessBlocker.diagnosticDetails;
+          runState.blockerReason = accessBlocker.diagnosticDetails;
+          runState.activeStepGoal = undefined;
+
+          runState.logs.push(
+            `[${new Date().toLocaleTimeString()}] ${accessBlocker.recommendedRunStatus}: ${accessBlocker.diagnosticDetails}`
+          );
+          for (const sig of accessBlocker.signalsDetected) {
+            runState.logs.push(`[${new Date().toLocaleTimeString()}] DIAGNOSTIC SIGNAL: ${sig}`);
+          }
+
+          // Save diagnostic evidence screenshot
+          const diagEvidence = await this.evidenceService.captureEvidence(runId, {
+            type: 'SCREENSHOT',
+            content: initialScreenshot,
+            filenamePrefix: 'diagnostic_blocker',
+            category: 'DIAGNOSTIC'
+          });
+          evidenceCollected.push(diagEvidence);
+          runState.evidence.push(diagEvidence);
+
+          this.db.updateRun({
+            id: runId,
+            status: accessBlocker.recommendedRunStatus,
+            totalSteps: 0,
+            passedSteps: 0,
+            failedSteps: 0,
+            bugsFound: 0,
+            endTime: new Date().toISOString()
+          });
+
+          return {
+            runId,
+            taskId,
+            finalStatus: accessBlocker.recommendedRunStatus,
+            totalStepsExecuted: 0,
+            passedSteps: 0,
+            failedSteps: 0,
+            bugsFound: 0,
+            durationMs: Date.now() - startTime,
+            error: accessBlocker.diagnosticDetails,
+            providerUsed: runProvider.name,
+            modelUsed: runModelId
+          };
         }
 
-        // Save diagnostic evidence screenshot
-        const diagEvidence = await this.evidenceService.captureEvidence(runId, {
-          type: 'SCREENSHOT',
-          content: initialScreenshot,
-          filenamePrefix: 'diagnostic_blocker',
-          category: 'DIAGNOSTIC'
-        });
-        evidenceCollected.push(diagEvidence);
-        runState.evidence.push(diagEvidence);
-
-        this.db.updateRun({
-          id: runId,
-          status: accessBlocker.recommendedRunStatus,
-          totalSteps: 0,
-          passedSteps: 0,
-          failedSteps: 0,
-          bugsFound: 0,
-          endTime: new Date().toISOString()
+        // Supervised session: pause for human verification
+        await this.handleSecurityChallenge(runId, activeBrowserSession.sessionId, accessBlocker, {
+          isSupervised: true,
+          initialScreenshot
         });
 
-        // Do not continue, do not click CAPTCHA, do not classify as product bug
-        return {
-          runId,
-          taskId,
-          finalStatus: accessBlocker.recommendedRunStatus,
-          totalStepsExecuted: 0,
-          passedSteps: 0,
-          failedSteps: 0,
-          bugsFound: 0,
-          durationMs: Date.now() - startTime,
-          error: accessBlocker.diagnosticDetails,
-          providerUsed: runProvider.name,
-          modelUsed: runModelId
-        };
+        // Await user decision (solve, cancel, or browser closed)
+        const decision = await this.awaitHumanDecision(runId, abortController.signal);
+
+        if (decision === 'CANCEL') {
+          runState.status = 'CANCELLED';
+          return {
+            runId,
+            taskId,
+            finalStatus: 'CANCELLED',
+            totalStepsExecuted: 0,
+            passedSteps: 0,
+            failedSteps: 0,
+            bugsFound: 0,
+            durationMs: Date.now() - startTime,
+            providerUsed: runProvider.name,
+            modelUsed: runModelId
+          };
+        }
+
+        if (decision === 'BROWSER_CLOSED') {
+          runState.status = 'FAILED';
+          runState.error = 'Browser session closed by user';
+          return {
+            runId,
+            taskId,
+            finalStatus: 'FAILED',
+            totalStepsExecuted: 0,
+            passedSteps: 0,
+            failedSteps: 0,
+            bugsFound: 0,
+            durationMs: Date.now() - startTime,
+            error: 'Browser session closed by user',
+            providerUsed: runProvider.name,
+            modelUsed: runModelId
+          };
+        }
+
+        // Resumed! Refresh observation on the SAME browser page
+        activeObservation = await this.browserManager.inspectWebPage(activePage.pageId);
+        const postResumeBlocker = detectAccessBlocker(activeObservation);
+        if (postResumeBlocker) {
+          runState.status = 'BLOCKED_SITE_VERIFICATION';
+          runState.error = postResumeBlocker.diagnosticDetails;
+          return {
+            runId,
+            taskId,
+            finalStatus: 'BLOCKED_SITE_VERIFICATION',
+            totalStepsExecuted: 0,
+            passedSteps: 0,
+            failedSteps: 0,
+            bugsFound: 0,
+            durationMs: Date.now() - startTime,
+            error: postResumeBlocker.diagnosticDetails,
+            providerUsed: runProvider.name,
+            modelUsed: runModelId
+          };
+        }
       }
 
       // 7. Verify Real Page Readiness
-      const readiness = verifyApplicationReady(initialObservation, task.analysis);
+      const readiness = verifyApplicationReady(activeObservation, task.analysis);
       if (!readiness.isReady) {
         runState.status = 'NEEDS_REVIEW';
         runState.error = readiness.reason;
@@ -595,7 +1210,7 @@ export class AgentOrchestrator {
       }
 
       // 8. Extract Test Requirements & Build Coverage Baseline
-      const requirements = extractTestRequirements(task.analysis, initialObservation);
+      const requirements = extractTestRequirements(task.analysis, activeObservation);
       runState.logs.push(
         `[${new Date().toLocaleTimeString()}] Requirements extracted: ${requirements.length} applicable test requirements mapped.`
       );
@@ -932,7 +1547,13 @@ export class AgentOrchestrator {
       };
     } finally {
       this.runtimeManager.releaseRunLock(runId);
-      if (activeBrowserSession) {
+      const isAwaitingOrHumanControl =
+        runState.status === 'AWAITING_HUMAN_VERIFICATION' ||
+        runState.status === 'HUMAN_CONTROL_ACTIVE' ||
+        runState.status === 'READY_TO_RESUME' ||
+        runState.status === 'PAUSED';
+
+      if (activeBrowserSession && !isAwaitingOrHumanControl) {
         await this.browserManager.closeSession(activeBrowserSession.sessionId).catch(() => {});
       }
       this.activeAbortControllers.delete(runId);
@@ -953,6 +1574,10 @@ export class AgentOrchestrator {
       activeRun.logs.push(`[${new Date().toLocaleTimeString()}] EMERGENCY STOP requested.`);
       if (activeRun.pausePromiseResolve) {
         activeRun.pausePromiseResolve();
+      }
+      if (activeRun.humanDecisionResolve) {
+        activeRun.humanDecisionResolve('CANCEL');
+        activeRun.humanDecisionResolve = undefined;
       }
     }
 

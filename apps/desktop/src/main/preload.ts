@@ -8,6 +8,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopRun: (runId: string) => ipcRenderer.invoke('run:stop', runId),
   getRunState: (runId: string) => ipcRenderer.invoke('run:state', runId),
   getRunLogs: (runId: string) => ipcRenderer.invoke('run:logs', runId),
+  focusTestingBrowser: (runId?: string) => ipcRenderer.invoke('run:focusBrowser', runId),
+  takeoverBrowser: (payload: { runId: string; active: boolean; reason?: string }) =>
+    ipcRenderer.invoke('run:takeover', payload),
+  checkPageAgain: (runId: string) => ipcRenderer.invoke('run:checkPage', runId),
+  validateResumeReadiness: (runId: string) => ipcRenderer.invoke('run:resumeReadiness', runId),
+  resumeAfterHumanVerification: (runId: string) => ipcRenderer.invoke('run:resumeVerification', runId),
 
   getMetrics: () => ipcRenderer.invoke('metrics:get'),
   listTasks: () => ipcRenderer.invoke('tasks:list'),

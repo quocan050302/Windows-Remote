@@ -280,6 +280,9 @@ test('8. Demo Lab continues to work with default authorization', async () => {
     assert.ok(state && state.evidence.length > 0);
   } finally {
     db.close();
+    if (demoServer.listening) {
+      demoServer.close();
+    }
   }
 });
 

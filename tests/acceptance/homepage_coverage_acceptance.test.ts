@@ -113,5 +113,8 @@ test('Acceptance: Full Homepage Functional Coverage on Local Fixture', async () 
 
   } finally {
     db.close();
+    if (demoServer.listening) {
+      demoServer.close();
+    }
   }
 });

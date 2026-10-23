@@ -325,13 +325,13 @@ export class AgentStudioDatabase {
     stmt.run(run.id, run.taskId, run.status, run.mode, run.startTime);
   }
 
-  public updateRun(run: { id: string; status: string; totalSteps: number; passedSteps: number; failedSteps: number; bugsFound: number; endTime: string }): void {
+  public updateRun(run: { id: string; status: string; totalSteps: number; passedSteps: number; failedSteps: number; bugsFound?: number; endTime?: string }): void {
     const stmt = this.db.prepare(`
       UPDATE agent_runs
-      SET status = ?, total_steps = ?, passed_steps = ?, failed_steps = ?, bugs_found = ?, end_time = ?
+      SET status = ?, total_steps = ?, passed_steps = ?, failed_steps = ?, bugs_found = ?, end_time = COALESCE(?, end_time)
       WHERE id = ?
     `);
-    stmt.run(run.status, run.totalSteps, run.passedSteps, run.failedSteps, run.bugsFound, run.endTime, run.id);
+    stmt.run(run.status, run.totalSteps, run.passedSteps, run.failedSteps, run.bugsFound ?? 0, run.endTime || null, run.id);
   }
 
   public saveTask(task: TaskRecord): void {
